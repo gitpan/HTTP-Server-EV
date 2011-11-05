@@ -39,7 +39,7 @@ require Exporter;
 *import = \&Exporter::import;
 require DynaLoader;
 
-$HTTP::Server::EV::VERSION = '0.1';
+$HTTP::Server::EV::VERSION = '0.1.1';
 DynaLoader::bootstrap HTTP::Server::EV $HTTP::Server::EV::VERSION;
 
 @HTTP::Server::EV::EXPORT = ();
