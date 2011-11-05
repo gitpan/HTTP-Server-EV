@@ -5,14 +5,26 @@ package HTTP::Server::EV;
 HTTP::Server::EV - Asynchronous HTTP server written in C with request parser. 
 
 =head1 DESCRIPTION
+
 HTTP::Server::EV - Asynchronous HTTP server using EV event loop. 
 It doesn`t load files received in the POST request in memory as moust of CGI modules does, but stores them directly to tmp files, so it`s useful for handling large files without using a lot of memory. 
 =head1 INCLUDED MODULES
 L<HTTP::Server::EV::CGI> - received http request object
 L<HTTP::Server::EV::MultipartFile> - received file object
 
-=head1 METHODS
-C<? - optional argument>
+=head1 SYNOPSIS
+
+	my $server = HTTP::Server::EV::CGI->new;
+	
+	$server->listen(90, sub {
+		my $cgi = shift;
+		
+		$cgi->attach(local *STDOUT);
+		$cgi->header;
+
+		print "Just another Perl server\n";
+	});
+
 
 =cut
 
@@ -41,25 +53,39 @@ our $fh_cache;
 use HTTP::Server::EV::CGI;
 use HTTP::Server::EV::MultipartFile;
 
-=head2 new({parameters}?)
-	my $server = HTTP::Server::EV::CGI->new({
-		tmp_path => './tmp'
-	});
-	or just
-	my $server = HTTP::Server::EV::CGI->new;
-Parameters:
-=item tmp_path 
+
+=head1 METHODS
+
+
+=head2 new( { options } )
+	
+Options:
+
+=over
+
+=item tmp_path
+
 	Directory for saving received files. Tries to create if not found, dies on fail. 
 	Default: ./upload_tmpfiles/
-=item cleanup_on_destroy 
-	Usually HTTP::Server::EV::CGI deletes it files on DESTROY, but in might by bug if you delete HTTP::Server::EV::CGI object when its files are still opened. Setting on this flag causes HTTP::Server::EV delete all files in tmp_path on program close, but don`t use it if jou have several process working with same tmp dir.
+
+
+=item cleanup_on_destroy
+
+	Usually HTTP::Server::EV::CGI deletes tmp files on DESTROY, but it might by bug if you delete HTTP::Server::EV::CGI object when its files are still opened. Setting on this flag causes HTTP::Server::EV delete all files in tmp_path on program close, but don`t use it if jou have several process working with same tmp dir.
 	Default: 0
+
 =item backend
+
 	Seting on cause HTTP::Server::EV::CGI parse ip from X-Real-IP http header
 	Default: 0
+
 =item fh_cache 
+
 	Setting 0 disables file handle cache and makes module threads safe - prevents dying on 'Invalid value for shared scalar' when ->fh called on HTTP::Server::EV::CGI or HTTP::Server::EV::MultipartFile
 	Default: 1
+
+=back
+
 =cut
 
 sub new {
@@ -84,8 +110,12 @@ sub new {
 	bless $params, $self;
 }
 
+
 =head2 listen( port , sub {callback} )
+
+
 Binds callback to port. Calls callback and passes HTTP::Server::EV::CGI object in it;
+	
 	$server->listen( 8080 , sub {
 		my $cgi = shift;
 		
@@ -95,7 +125,10 @@ Binds callback to port. Calls callback and passes HTTP::Server::EV::CGI object i
 		
 		print "Test page";
 	});
+
 =cut
+
+
 sub listen{
 	my ($self, $port, $cb) = @_;
 	
@@ -122,9 +155,13 @@ sub listen{
 	push @sockets, $socket;
 }
 
+
 =head2 cleanup
+
 Delete all files in tmp_path. Automatically called on DESTROY if cleanup_on_destroy set
+
 =cut
+
 
 sub cleanup {
 	my @files = glob (shift->{tmp_path}.'*');
@@ -140,17 +177,27 @@ sub dl_load_flags {0}; # Prevent DynaLoader from complaining and croaking
 1;
 
 =head1 TODO
+
 Write tests
+
 Write request parser error handling - Server drops connection on error(Malformed or too large request), but there is no way to know what error happened.
+
 unbind function
 
-=head1 BUGS/WARNINGS 
+=head1 BUGS/WARNINGS
+
 You can`t create two HTTP::Server::EV objects at same process.
+
 Static allocated buffers:
+
 - Can`t listen more than 20 ports at same time
+
 - 4kb for GET/POST form field names
+
 - 4kb for GET values
+
 - 50kb for POST form field values ( not for files. Files are stored into tmp directly from socket stream, so filesize not limited by HTTP::Server::EV)
+
 HTTP::Server::EV drops connection if some buffer overflows. You can change these values in EV.xs and recompile module.
 
 
@@ -158,6 +205,3 @@ HTTP::Server::EV drops connection if some buffer overflows. You can change these
 
 This module is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself.
-
-
-=cut

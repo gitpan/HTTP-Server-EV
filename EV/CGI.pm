@@ -3,34 +3,54 @@ use strict;
 use bytes;
 use Encode;
 use Time::HiRes qw(gettimeofday tv_interval);
-our $VERSION = $HTTP::Server::EV::VERSION;
+our $VERSION = '0.1';
 
 =head1 NAME
+
 	HTTP::Server::EV::CGI - Contains http request data and some extra functions.  
+
 =head1 GETTING DATA
+
+=over
+
 =item $cgi->{headers}{header_name} = value
 
 To get last parsed from form value use
+
 =item $cgi->{get}{url_filed_name} = url_filed_value
+
 =item $cgi->{cookies}{cookie_name} = cookie_value
+
 =item $cgi->{post}{form_filed_name} = form_filed_value
+
 =item $cgi->{file}{form_file-filed_name} = L<HTTP::Server::EV::MultipartFile> object
 
+=back
 
 To get reference to array of all elements with same name ( selects, checkboxes, ...) use
-	
+
+=over
+
 =item $cgi->get('filed_name')
+
 =item $cgi->post('filed_name')
+
 =item $cgi->file('filed_name')
 
 =item $cgi->param('filed_name');
+
+=back
+
 Returns one or list of elements depending on call context.
 Prefers returning GET values if exists
 Never returns L<HTTP::Server::EV::MultipartFile> files, use $cgi->{file}{filed_name} or $cgi->file('filed_name')
 
 All values are utf8 encoded
+
 =head1 METHODS
+
 =cut
+
 
 
 our $cookies_lifetime = 3600*24*31;
@@ -105,24 +125,34 @@ sub new {
 }
 
 =head2 $cgi->next;
+
 Ends port listener callback processing. Don`t use it somewhere except HTTP::Server::EV port listener callback
+
 =cut
+
 sub next { goto NEXT_REQ ; };
 
 =head2 $cgi->fd;
+
 Returns file descriptor (int)
+
 =cut
+
 sub fd { shift->{fd} }
 
 =head2 $cgi->fh;
+
 Returns perl file handle
+
 =cut
+
 sub fh { shift->{fh} }
 
 
 
 
 =head2 $cgi->attach(*FH);
+
 Attaches client socket to FH.
 	$server->listen( 8080 , sub {
 		my $cgi = shift;
@@ -133,7 +163,9 @@ Attaches client socket to FH.
 		
 		print "Test page"; 
 	});
+
 =cut
+
 sub attach {
 	open($_[1], '>&', $_[0]->{fd} ) or die 'Can`t attach socket handle';
 	binmode $_[1];
@@ -141,18 +173,28 @@ sub attach {
 
 
 =head2 $cgi->close;
+
 Close received socket.
+
 =cut
+
 sub close { 
 	CORE::close $_[0]->{fh} ;
 	#HTTP::Server::EV::close_socket( $_[0]->{fd} );
 };
 
+
 =head2 $cgi->start_timer
-	Initalize a page generation timer. Called automatically on every request
+
+Initalize a page generation timer. Called automatically on every request
+
 =head2 $cgi->flush_timer
-	Returns string like '0.12345' with page generation time	
+
+Returns string like '0.12345' with page generation time	
+
 =cut
+
+
 ### Page generation timer
 sub start_timer { shift->{timer}=[gettimeofday] }; # start/reset timer
 sub flush_timer { return tv_interval(shift->{timer}) }; # get generation time
@@ -169,9 +211,15 @@ sub param {
 	}
 }
 
+
 =head2 $cgi->set_cookies({ name=> 'value', name2=> 'value2' }, $sec_lifetime );
-	Takes hashref with cookies as first argumet. Second(optional) argument is cookies lifetime in seconds(1 month by default)
+
+Takes hashref with cookies as first argumet. Second(optional) argument is cookies lifetime in seconds(1 month by default)
+
 =cut
+
+
+
 sub set_cookies {
 	my ($self,$cookies, $lifetime)=@_;
 	my ($name,$value);
@@ -183,15 +231,34 @@ sub set_cookies {
 };
 
 # generate headers
+
 =head2 $cgi->header( \%args );
-Prints http headers to socket
+
+Prints http headers and cookies buffer to socket
+
 Args:
-STATUS - HTTP status string. '200 OK' by default
-Server - Server header. 'Perl HTTP::Server::EV' by default
-Content-Type - Content-Type header. 'text/html' by default
+
+=over
+
+=item STATUS 
+
+HTTP status string. '200 OK' by default
+
+=item Server 
+
+Server header. 'Perl HTTP::Server::EV' by default
+
+=item Content-Type
+
+	Content-Type header. 'text/html' by default
+
+=back
+
 All other args will be converted to headers.
-Sends cookies buffer to browser
+
 =cut
+
+
 sub header {
 	my ($self,$params)=@_;
 	
@@ -205,9 +272,13 @@ sub header {
 	syswrite($self->{fh}, $headers."\r\n");
 }
 
+
 =head2 $cgi->urldecode( $str );
-Returns urdecoded utf8 string
+
+Returns urlecoded utf8 string
+
 =cut
+
 sub urldecode {
 	local $_ = $_[1];
 	s/\+/ /gs;
