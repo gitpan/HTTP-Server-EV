@@ -3,7 +3,7 @@ use strict;
 use bytes;
 use Encode;
 use Time::HiRes qw(gettimeofday tv_interval);
-our $VERSION = '0.1.1';
+our $VERSION = '0.2';
 
 =head1 NAME
 

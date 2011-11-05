@@ -6,7 +6,7 @@ use ExtUtils::MakeMaker;
 my %options = (
   'TYPEMAPS' => [],
   'NAME' => 'HTTP::Server::EV',
-  'VERSION' => '0.1.1',
+  'VERSION' => '0.2',
   'OPTIMIZE' => ' -O2',
   'BUILD_REQUIRES' => { 
 	'Time::HiRes'  => 0,

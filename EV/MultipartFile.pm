@@ -1,7 +1,7 @@
 package HTTP::Server::EV::MultipartFile;
 use File::Copy;
 use strict;
-our $VERSION = '0.1.1';
+our $VERSION = '0.2';
 
 =head1 NAME
 

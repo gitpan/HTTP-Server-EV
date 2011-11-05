@@ -39,7 +39,7 @@ require Exporter;
 *import = \&Exporter::import;
 require DynaLoader;
 
-$HTTP::Server::EV::VERSION = '0.1.1';
+$HTTP::Server::EV::VERSION = '0.2';
 DynaLoader::bootstrap HTTP::Server::EV $HTTP::Server::EV::VERSION;
 
 @HTTP::Server::EV::EXPORT = ();
@@ -47,7 +47,7 @@ DynaLoader::bootstrap HTTP::Server::EV $HTTP::Server::EV::VERSION;
 
 our @sockets;
 our $backend;
-our $fh_cache;
+
 
 ###################################
 use HTTP::Server::EV::CGI;
@@ -79,10 +79,6 @@ Options:
 	Seting on cause HTTP::Server::EV::CGI parse ip from X-Real-IP http header
 	Default: 0
 
-=item fh_cache 
-
-	Setting 0 disables file handle cache and makes module threads safe - prevents dying on 'Invalid value for shared scalar' when ->fh called on HTTP::Server::EV::CGI or HTTP::Server::EV::MultipartFile
-	Default: 1
 
 =back
 
@@ -101,11 +97,6 @@ sub new {
 	
 	set_tmpdir($params->{tmp_path}); # internal XS method, don`t call it from your program
 	
-	if(exists $params->{fh_cache}){
-		$fh_cache = $params->{fh_cache};
-	}else{
-		$fh_cache = 1;
-	}
 	
 	bless $params, $self;
 }
