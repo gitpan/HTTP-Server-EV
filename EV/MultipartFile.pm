@@ -1,11 +1,11 @@
 package HTTP::Server::EV::MultipartFile;
 use File::Copy;
 use strict;
-our $VERSION = '0.2';
+our $VERSION = '0.3';
 
 =head1 NAME
 
-	HTTP::Server::EV::MultipartFile - represents file received by L<HTTP::Server::EV>
+HTTP::Server::EV::MultipartFile - represents file received by L<HTTP::Server::EV>
 
 =cut
 
@@ -37,7 +37,7 @@ Path to tmp file. You don`t need to use this. Use $file->save() instead
 
 =head2 $file->fh;
 
-Return filehandle opened to reading. Die on error
+Returns filehandle opened to reading. Die on error
 
 =cut
 
@@ -78,7 +78,7 @@ sub save {
 
 =head2 $file->del;
 
-Delete file from tmp directory. You don`t need to use this method, L<HTTP::Server::EV::CGI> calls it on all request files on DESTROY
+Deletes file from tmp directory. Automatically called on DESTROY
 
 =cut
 
@@ -90,5 +90,6 @@ sub del {
 	unlink $self->{path} unless $self->{moved};
 }
 
+*DESTROY = \&del;
 
 1;

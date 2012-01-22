@@ -8,9 +8,13 @@ HTTP::Server::EV - Asynchronous HTTP server written in C with request parser.
 
 HTTP::Server::EV - Asynchronous HTTP server using EV event loop. 
 It doesn`t load files received in the POST request in memory as moust of CGI modules does, but stores them directly to tmp files, so it`s useful for handling large files without using a lot of memory. 
+
 =head1 INCLUDED MODULES
+
 L<HTTP::Server::EV::CGI> - received http request object
 L<HTTP::Server::EV::MultipartFile> - received file object
+L<HTTP::Server::EV::Buffer> - non blocking output
+L<HTTP::Server::EV::BufTie> - workaround for correct handling requests in L<Coro> threads
 
 =head1 SYNOPSIS
 
@@ -19,7 +23,7 @@ L<HTTP::Server::EV::MultipartFile> - received file object
 	$server->listen(90, sub {
 		my $cgi = shift;
 		
-		$cgi->attach(local *STDOUT);
+		$cgi->attach(*STDOUT);
 		$cgi->header;
 
 		print "Just another Perl server\n";
@@ -27,6 +31,7 @@ L<HTTP::Server::EV::MultipartFile> - received file object
 
 
 =cut
+
 
 use EV;
 use strict;
@@ -39,7 +44,7 @@ require Exporter;
 *import = \&Exporter::import;
 require DynaLoader;
 
-$HTTP::Server::EV::VERSION = '0.2';
+$HTTP::Server::EV::VERSION = '0.3';
 DynaLoader::bootstrap HTTP::Server::EV $HTTP::Server::EV::VERSION;
 
 @HTTP::Server::EV::EXPORT = ();
@@ -65,19 +70,19 @@ Options:
 
 =item tmp_path
 
-	Directory for saving received files. Tries to create if not found, dies on fail. 
-	Default: ./upload_tmpfiles/
+Directory for saving received files. Tries to create if not found, dies on fail. 
+Default: ./upload_tmpfiles/
 
 
 =item cleanup_on_destroy
 
-	Usually HTTP::Server::EV::CGI deletes tmp files on DESTROY, but it might by bug if you delete HTTP::Server::EV::CGI object when its files are still opened. Setting on this flag causes HTTP::Server::EV delete all files in tmp_path on program close, but don`t use it if jou have several process working with same tmp dir.
-	Default: 0
+Usually HTTP::Server::EV::CGI deletes tmp files on DESTROY, but it might by bug if you delete HTTP::Server::EV::CGI object when its files are still opened. Setting on this flag causes HTTP::Server::EV delete all files in tmp_path on program close, but don`t use it if jou have several process working with same tmp dir.
+Default: 0
 
 =item backend
 
-	Seting on cause HTTP::Server::EV::CGI parse ip from X-Real-IP http header
-	Default: 0
+Seting on cause HTTP::Server::EV::CGI parse ip from X-Real-IP http header
+Default: 0
 
 
 =back

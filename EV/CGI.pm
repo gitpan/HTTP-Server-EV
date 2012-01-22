@@ -1,31 +1,41 @@
 package HTTP::Server::EV::CGI;
+
 use strict;
 use bytes;
 use Encode;
+use Carp;
 use Time::HiRes qw(gettimeofday tv_interval);
-our $VERSION = '0.2';
+
+use HTTP::Server::EV::Buffer;
+use HTTP::Server::EV::BufTie;
+
+our $VERSION = '0.3';
 
 =head1 NAME
 
-	HTTP::Server::EV::CGI - Contains http request data and some extra functions.  
+HTTP::Server::EV::CGI - Contains http request data and some extra functions.  
 
 =head1 GETTING DATA
 
 =over
+	
+To get headers and CGI compatible ENV vars use
 
-=item $cgi->{headers}{header_name} = value
+=item $cgi->{ headers }{ header_name } = value
+
 
 To get last parsed from form value use
 
-=item $cgi->{get}{url_filed_name} = url_filed_value
+=item $cgi->{ get }{ url_filed_name }
 
-=item $cgi->{cookies}{cookie_name} = cookie_value
+=item $cgi->{ cookies }{ cookie_name }
 
-=item $cgi->{post}{form_filed_name} = form_filed_value
+=item $cgi->{ post }{ form_filed_name } 
 
-=item $cgi->{file}{form_file-filed_name} = L<HTTP::Server::EV::MultipartFile> object
+=item $cgi->{ file }{ form_file-filed_name } - L<HTTP::Server::EV::MultipartFile> object
 
 =back
+
 
 To get reference to array of all elements with same name ( selects, checkboxes, ...) use
 
@@ -41,11 +51,20 @@ To get reference to array of all elements with same name ( selects, checkboxes, 
 
 =back
 
-Returns one or list of elements depending on call context.
-Prefers returning GET values if exists
-Never returns L<HTTP::Server::EV::MultipartFile> files, use $cgi->{file}{filed_name} or $cgi->file('filed_name')
+Returns one or list of elements depending on call context. 
+Prefers returning GET values if exists.
+
+Never returns L<HTTP::Server::EV::MultipartFile> files, use $cgi->{ file }{ filed_name } or $cgi->file('filed_name')
 
 All values are utf8 encoded
+
+=head1 NON BLOCKING OUTPUT
+
+$cgi->{buffer} = L<HTTP::Server::EV::Buffer> object
+
+$cgi->buffer - returns non blocking filehandle tied to L<HTTP::Server::EV::Buffer> object
+
+$cgi->attach(*STDOUT) - attaches STDOUT to socket makes it non blocking 
 
 =head1 METHODS
 
@@ -54,6 +73,7 @@ All values are utf8 encoded
 
 
 our $cookies_lifetime = 3600*24*31;
+
 
 #$cgi->new({ fd => sock fileno , post => {}, get => {} , headers => {} .... });
 
@@ -65,22 +85,24 @@ sub new {
 	
 	$self->start_timer;
 	
+	open my $fh, '>&='.$self->{fd}; 
+	binmode $fh;
 	
-	open $self->{fh}, '>&='.$self->{fd}; 
-	binmode $self->{fh};
+	$self->{buffer} = HTTP::Server::EV::Buffer->new({ fh => $fh });
+	$self->{stdout_guard} = [];
 	
 	## Parse headers. CGI compatible
-	( $self->{headers}->{SCRIPT_NAME}, $self->{headers}{QUERY_STRING} ) =(split /\?/, $self->{headers}{REQUEST_URI});
+	( $self->{headers}{SCRIPT_NAME}, $self->{headers}{QUERY_STRING} ) =(split /\?/, $self->{headers}{REQUEST_URI});
 	
-	$self->{headers}->{DOCUMENT_URI} = $self->{headers}{SCRIPT_NAME};
+	$self->{headers}{DOCUMENT_URI} = $self->{headers}{SCRIPT_NAME};
 	
 	for(keys %{$self->{headers}}){
 		$self->{headers}->{'HTTP_'.uc($_)}=$self->{headers}->{$_};
 	}
 	
-	$self->{headers}{REMOTE_ADDR} = $self->{headers}->{'HTTP_X-REAL-IP'} if($HTTP::Server::EV::backend && $self->{headers}->{'HTTP_X-REAL-IP'});
-	$self->{headers}->{CONTENT_TYPE} = $self->{headers}->{'HTTP_CONTENT-TYPE'};
-	$self->{headers}->{CONTENT_LENGTH} = $self->{headers}->{'HTTP_CONTENT-LENGTH'};
+	$self->{headers}{REMOTE_ADDR} = $self->{headers}{'HTTP_X-REAL-IP'} if($HTTP::Server::EV::backend && $self->{headers}{'HTTP_X-REAL-IP'});
+	$self->{headers}{CONTENT_TYPE} = $self->{headers}{'HTTP_CONTENT-TYPE'};
+	$self->{headers}{CONTENT_LENGTH} = $self->{headers}{'HTTP_CONTENT-LENGTH'};
 	
 	
 
@@ -124,15 +146,15 @@ sub new {
 	return $self;
 }
 
-=head2 $cgi->next;
+=head2 $cgi->next
 
-Ends port listener callback processing. Don`t use it somewhere except HTTP::Server::EV port listener callback
+Ends port listener callback processing. Don`t use it somewhere except HTTP::Server::EV port listener callback or set goto label NEXT_REQ: 
 
 =cut
 
 sub next { goto NEXT_REQ ; };
 
-=head2 $cgi->fd;
+=head2 $cgi->fd
 
 Returns file descriptor (int)
 
@@ -140,46 +162,105 @@ Returns file descriptor (int)
 
 sub fd { shift->{fd} }
 
-=head2 $cgi->fh;
+=head2 $cgi->fh
 
-Returns perl file handle
+Returns perl file handle attached to socket. 
+Non buffered and blocking, use $cgi->{buffer}->print() or $cgi->buffer handle instead for sending data without attaching socket.
 
 =cut
 
-sub fh { shift->{fh} }
+sub fh { 
+	croak 'Can`t get fh of closed socket!' unless $_[0]->{buffer};
+	
+	$_[0]->{buffer}{fh}
+}
 
+=head2 $cgi->buffer
 
+Returns handle tied to L<HTTP::Server::EV::Buffer> object. Writing to this handle buffered an non-blocking
 
+=cut
 
-=head2 $cgi->attach(*FH);
+sub buffer { 
+	croak 'Can`t geet buffered handle from closed socket!' unless $_[0]->{buffer};
+	
+	tie($_[0]->{buf_fh}, 'HTTP::Server::EV::Buffer', $_[0]->{buffer}) unless $_[0]->{buf_fh};
+	
+	return $_[0]->{buf_fh};
+}
+
+=head2 $cgi->attach(*FH)
 
 Attaches client socket to FH.
+Uses L<HTTP::Server::EV::BufTie> to support processing requests in L<Coro> threads when using L<Coro::EV>
+Uses L<HTTP::Server::EV::Buffer> to provide non-blocking output.
+
 	$server->listen( 8080 , sub {
 		my $cgi = shift;
 		
-		$cgi->attach(local *STDOUT); # attach STDOUT to socket
+		$cgi->attach(*STDOUT); # attach STDOUT to socket
 		
 		$cgi->header; # print http headers
 		
 		print "Test page"; 
 	});
 
+
 =cut
 
+
 sub attach {
-	open($_[1], '>&', $_[0]->{fd} ) or die 'Can`t attach socket handle';
+	croak 'Can`t attach closed socket!' unless $_[0]->{buffer};
+	
+	push @{$_[0]->{stdout_guard}}, HTTP::Server::EV::BufTie->new($_[1], $_[0]->{buffer});
+}
+
+
+=head2 $cgi->copy(*FH)
+
+Attaches socket to handle but don`t uses L<HTTP::Server::EV::BufTie> magick and buffered L<HTTP::Server::EV::Buffer> otput.
+
+=cut
+
+
+sub copy {
+	croak 'Can`t attach closed socket!' unless $_[0]->{buffer};
+	
+	open($_[1], '>&', $_[0]->{fd} ) or croak 'Can`t attach socket handle';
 	binmode $_[1];
 }
 
 
-=head2 $cgi->close;
+=head2 $cgi->print($data)
 
-Close received socket.
+Buffered non-blocking print to socket. Same as $cgi->{buffer}->print or $cgi->buffer handle
+
+=cut
+
+
+sub print {shift->{buffer}->print(@_)};
+
+
+=head2 $cgi->flush
+
+Flushes all buffered data to socket. Same as $cgi->{buffer}->flush
+
+=cut
+
+
+sub flush {$_[0]->{buffer}->flush};
+
+
+
+=head2 $cgi->close
+
+Flush all buffered data and close received connection.
 
 =cut
 
 sub close { 
-	CORE::close $_[0]->{fh} ;
+	delete $_[0]->{buffer}; # From 0.21 HTTP::Server::EV::Buffer closes socket
+	#CORE::close $_[0]->{fh} ;
 	#HTTP::Server::EV::close_socket( $_[0]->{fd} );
 };
 
@@ -250,7 +331,7 @@ Server header. 'Perl HTTP::Server::EV' by default
 
 =item Content-Type
 
-	Content-Type header. 'text/html' by default
+Content-Type header. 'text/html' by default
 
 =back
 
@@ -261,6 +342,7 @@ All other args will be converted to headers.
 
 sub header {
 	my ($self,$params)=@_;
+	croak 'Can`t print headers to closed socket!' unless $_[0]->{buffer};
 	
 	my $headers = 'HTTP/1.1 '.($params->{'STATUS'} ? delete($params->{'STATUS'}) : '200 OK')."\r\n";
 	$headers .= 'Server: '.($params->{'Server'} ? delete($params->{'Server'}) : 'Perl HTTP::Server::EV')."\r\n";
@@ -269,7 +351,7 @@ sub header {
 	
 	$headers .= $_.': '.$params->{$_}."\r\n" for(keys %{$params});
 	
-	syswrite($self->{fh}, $headers."\r\n");
+	$self->{buffer}->print($headers."\r\n");
 }
 
 
@@ -280,20 +362,22 @@ Returns urlecoded utf8 string
 =cut
 
 sub urldecode {
-	local $_ = $_[1];
-	s/\+/ /gs;
-	s/%(?:([Dd][0-9a-fA-F])%([0-9a-fA-F]{2})|([0-9a-fA-F]{2}))/
+	my $tmp = $_[1];
+	$tmp=~s/\+/ /gs;
+	$tmp=~s/%(?:([Dd][0-9a-fA-F])%([0-9a-fA-F]{2})|([0-9a-fA-F]{2}))/
 		$1 ? chr(hex $1).chr(hex $2) : decode("cp1251",chr(hex $3))
 	/eg;
-	Encode::_utf8_on($_);
-	return $_;
+	Encode::_utf8_on($tmp);
+	return $tmp;
 };
-					
-sub DESTROY  {
-	$_[0]->close;
-	for my $arr_ref (values %{$_[0]->{file_a}}){
-		$_->del for(@{$arr_ref});
-	}
-};
+	
+#sub DESTROY  {
+	#$_[0]->close; # Since 0.21 HTTP::Server::EV::Buffer closes socket
+	
+	# Since 0.21 HTTP::Server::EV::MultipartFile deletes itself on DESTROY
+	#for my $arr_ref (values %{$_[0]->{file_a}}){
+	#	$_->del for(@{$arr_ref});
+	#}
+#};
 
 1;

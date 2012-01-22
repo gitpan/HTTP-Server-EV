@@ -1,5 +1,11 @@
 Revision history for Perl extension HTTP::Server::EV.
 
+0.21  
+	- Written HTTP::Server::EV::Buffer - non blocking output
+	- Written HTTP::Server::EV::BufTie - workaround to correct handling requests in Coro threads
+	- Some changes in HTTP::Server::EV::CGI to provide non blocking output
+	- Multipart files now deleted on self object DESTROY, not on parent CGI object DESTROY, so you can work with files after deleting request object
+
 0.1  Fri Nov  4 19:50:01 2011
 	- first release
 
