@@ -1,5 +1,5 @@
 package HTTP::Server::EV::BufTie;
-our $VERSION = '0.3';
+our $VERSION = '0.31';
 use Carp;
 use strict;
 use bytes;
@@ -12,7 +12,7 @@ HTTP::Server::EV::BufTie - Internal class used by L<HTTP::Server::EV::CGI> for p
 =head1 DESCRIPTION
 
 Mainly it`s workaround for bug of localizing *STDOUT(no only it, all global vars also) in L<Coro> threads, when calling HTTP::Server::EV::CGI->attach(local *STDOUT) overwrites STDOUT in all now runing coros.
-That happens because local() doesn`t create lexical copy of var, it pushes old value to stack and sets new value to glob var, old value is restored when interpreter leaves the scope. So localizing variable in one coro overvrites it in all other.
+That happens because local() doesn`t create lexical copy of var, it pushes old value to stack and sets new value to glob var, old value is restored when interpreter leaves the scope. So localizing variable in one coro overwrites it in all other.
 
 =head1 BUGS
 

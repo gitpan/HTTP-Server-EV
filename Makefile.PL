@@ -1,16 +1,19 @@
 
 eval {use EV::MakeMaker qw(ev_args);};
-die 'ERROR! This module requries EV module.' if($@);
+warn 'ERROR! This module requries EV module instaled first. ' if($@);
 
 use ExtUtils::MakeMaker;
 my %options = (
   'TYPEMAPS' => [],
   'NAME' => 'HTTP::Server::EV',
-  'VERSION' => '0.3',
+  'VERSION' => '0.31',
   'OPTIMIZE' => ' -O2',
   'BUILD_REQUIRES' => { 
 	'Time::HiRes'  => 0,
-	'File::Copy'   => 0
+	'File::Copy'   => 0,
+	'EV'		   => 0,
+	'Guard'		   => 0,
+	'AnyEvent::HTTP' => 0,
   },
 
 );

@@ -9,7 +9,7 @@ use Time::HiRes qw(gettimeofday tv_interval);
 use HTTP::Server::EV::Buffer;
 use HTTP::Server::EV::BufTie;
 
-our $VERSION = '0.3';
+our $VERSION = '0.31';
 
 =head1 NAME
 
@@ -286,7 +286,7 @@ sub post { return $_[0]->{post_a}{$_[1]} ? $_[0]->{post_a}{$_[1]} : [] ;}
 sub file { return $_[0]->{file_a}{$_[1]} ? $_[0]->{file_a}{$_[1]} : [] ;}
 sub param {
 	if(wantarray){
-		return @{$_[0]->{get_a}{$_[1]}} || @{$_[0]->{post_a}{$_[1]}};
+		return @{$_[0]->{get_a}{$_[1]} || []} || @{$_[0]->{post_a}{$_[1]} || []};
 	}else{
 		return $_[0]->{get}{$_[1]} || $_[0]->{post}{$_[1]};
 	}

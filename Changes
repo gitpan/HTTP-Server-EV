@@ -1,5 +1,11 @@
 Revision history for Perl extension HTTP::Server::EV.
 
+0.31  
+	- Fixed non ARRAY reference error when cgi->param called in list context with nonexistent param name
+	- Added explicit type-casting, no more compiler warnings
+	- Little documentation fix
+
+
 0.21  
 	- Written HTTP::Server::EV::Buffer - non blocking output
 	- Written HTTP::Server::EV::BufTie - workaround to correct handling requests in Coro threads

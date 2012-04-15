@@ -77,7 +77,7 @@ struct req_state {
 	
 	char *filepath; 
 	
-	PerlIO tmpfile;
+	PerlIO * tmpfile;
 	char *tmpbuffer;
 	int tmppos;
 	int tmpfilesize;
@@ -110,14 +110,14 @@ struct req_state {
 		for(i = dirstrlen; i < dirstrlen+19 ; i++){ state->filepath[i] = 'a' + rand() % 26; }
 		state->filepath[dirstrlen+19]='\0';
 		
-		if(!( state->tmpfile = PerlIO_open(state->filepath, "w")) )
+		if(!( state->tmpfile = (PerlIO *) PerlIO_open(state->filepath, "w")) )
 		{ croak("HTTP::Server::EV ERROR: Can`t create tmp file!");};
 		
 		
 		#ifdef USE_ITHREADS
-			PerlIO_binmode(NULL, state->tmpfile , '>' ,O_BINARY, NULL); 
+			PerlIO_binmode(NULL, (PerlIO *) state->tmpfile , '>' ,O_BINARY, NULL); 
 		#else
-			PerlIO_binmode( state->tmpfile , '>' ,O_BINARY, NULL); 
+			PerlIO_binmode( (PerlIO *) state->tmpfile , '>' ,O_BINARY, NULL); 
 		#endif
 		
 	}
@@ -178,7 +178,7 @@ struct req_state {
 		I32 interator = hv_iterinit(state->file_a);
 		HE* entry; int i;
 		for(i = 0; i < interator ; i++){
-			AV* arr = SvRV( 
+			AV* arr = (AV*) SvRV( 
 				hv_iterval(  state->file_a, hv_iternext(state->file_a) ) 
 			);
 			
@@ -186,7 +186,7 @@ struct req_state {
 			I32 key;
 			//printf("Arr %d\n",len);
 			for(key = 0; key < len ; key++){
-				HV* hash = SvRV( *(av_fetch(arr, key, 0)) );
+				HV* hash = (HV*) SvRV( *(av_fetch(arr, key, 0)) );
 				
 				char *path = SvPV_nolen( *(hv_fetch(hash, "path", 4, 0)) );
 				//printf("Path %s\n",path);
@@ -288,11 +288,11 @@ struct req_state * alloc_state (){
 	
 	state->rethash = newHV();
 	
-	hv_store(state->rethash, "post" , 4, newRV_noinc(state->post), 0);
-	hv_store(state->rethash, "post_a" , 6, newRV_noinc(state->post_a), 0);
-	hv_store(state->rethash, "file" , 4, newRV_noinc(state->file), 0);
-	hv_store(state->rethash, "file_a" , 6, newRV_noinc(state->file_a), 0);
-	hv_store(state->rethash, "headers" , 7, newRV_noinc(state->headers), 0);
+	hv_store(state->rethash, "post" , 4, newRV_noinc((SV*)state->post), 0);
+	hv_store(state->rethash, "post_a" , 6, newRV_noinc((SV*)state->post_a), 0);
+	hv_store(state->rethash, "file" , 4, newRV_noinc((SV*)state->file), 0);
+	hv_store(state->rethash, "file_a" , 6, newRV_noinc((SV*)state->file_a), 0);
+	hv_store(state->rethash, "headers" , 7, newRV_noinc((SV*)state->headers), 0);
 	
 	state->saved_to = accepted_stack[accepted_stack_pos]; 
 	//accepted[ accepted_stack[accepted_stack_pos] ].saved_to = accepted_stack[accepted_stack_pos];
@@ -313,11 +313,11 @@ void push_to_hash(HV* hash, char *key, int  klen, SV* data){
 		SV** arrayref;
 		if(hv_exists(hash, key, klen )){
 			if(arrayref = hv_fetch(hash, key, klen, 0)){
-				av_push( SvRV( *arrayref ) , data);
+				av_push((AV*) SvRV( *arrayref ) , data);
 				SvREFCNT_inc(data);
 			}
 		} else {
-			hv_store(hash, key, klen, newRV_noinc( av_make(1, &data )  )  , 0);
+			hv_store(hash, key, klen, newRV_noinc((SV*) av_make(1, &data )  )  , 0);
 		}
 	}
 
@@ -351,7 +351,7 @@ void call_perl(struct req_state *state, int socket){
 	PUSHMARK(SP);
 	EXTEND(SP, 2);
 	PUSHs( sv_2mortal( newSViv(state->saved_to) ) );
-	PUSHs( sv_2mortal( newRV_inc(state->rethash) ) );
+	PUSHs( sv_2mortal( newRV_inc((SV*)state->rethash) ) );
 	PUTBACK;
 	
 	SV *cb = state->callback;
@@ -689,7 +689,7 @@ static void listen_cb (struct ev_loop *loop, ev_io *w, int revents){
 		struct sockaddr_in cliaddr;
 		int addrlen = sizeof(cliaddr);
 		
-		if( ( accepted_socket = accept( w->fd ,  &cliaddr, &addrlen ) ) == -1 )
+		if( ( accepted_socket = accept( w->fd , (struct sockaddr *) &cliaddr, &addrlen ) ) == -1 )
 		{ croak("HTTP::Server::EV ERROR: Can`t accept connection. Enlarge your number of open file descriptors"); }; //ERROR: Enlarge your penis
 		
 		struct req_state *connect_handler = alloc_state();
@@ -715,7 +715,7 @@ void listen_socket(PerlIO* sock, SV* callback){
 		SvREFCNT_inc(callback);
 		listeners[listeners_pos].callback = callback;
 		
-		ev_io_init (&listeners[listeners_pos].io, listen_cb, PerlIO_fileno(*sock), EV_READ);
+		ev_io_init (&listeners[listeners_pos].io, listen_cb, PerlIO_fileno((PerlIO*)*sock), EV_READ);
 		ev_io_start (EV_DEFAULT, &listeners[listeners_pos].io);
 		
 		listeners_pos++;
@@ -789,7 +789,7 @@ set_tmpdir ( new_tmp )
 SV * get_request( stack_pos )
 	int stack_pos
     CODE:
-        RETVAL =  newRV_inc(accepted[ stack_pos ]->rethash);
+        RETVAL =  newRV_inc((SV*)accepted[ stack_pos ]->rethash);
 		del_state( accepted[ stack_pos ] );
     OUTPUT:
         RETVAL

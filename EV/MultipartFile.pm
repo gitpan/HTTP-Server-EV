@@ -1,7 +1,7 @@
 package HTTP::Server::EV::MultipartFile;
 use File::Copy;
 use strict;
-our $VERSION = '0.3';
+our $VERSION = '0.31';
 
 =head1 NAME
 
@@ -37,7 +37,7 @@ Path to tmp file. You don`t need to use this. Use $file->save() instead
 
 =head2 $file->fh;
 
-Returns filehandle opened to reading. Die on error
+Returns filehandle opened to reading. Dies on error
 
 =cut
 

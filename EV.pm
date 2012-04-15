@@ -18,7 +18,9 @@ L<HTTP::Server::EV::BufTie> - workaround for correct handling requests in L<Coro
 
 =head1 SYNOPSIS
 
-	my $server = HTTP::Server::EV::CGI->new;
+	use EV;
+	use HTTP::Server::EV;
+	my $server = HTTP::Server::EV->new;
 	
 	$server->listen(90, sub {
 		my $cgi = shift;
@@ -28,6 +30,7 @@ L<HTTP::Server::EV::BufTie> - workaround for correct handling requests in L<Coro
 
 		print "Just another Perl server\n";
 	});
+	EV::loop;
 
 
 =cut
@@ -44,7 +47,7 @@ require Exporter;
 *import = \&Exporter::import;
 require DynaLoader;
 
-$HTTP::Server::EV::VERSION = '0.3';
+$HTTP::Server::EV::VERSION = '0.31';
 DynaLoader::bootstrap HTTP::Server::EV $HTTP::Server::EV::VERSION;
 
 @HTTP::Server::EV::EXPORT = ();
