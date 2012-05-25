@@ -13,7 +13,7 @@ HTTP::Server::EV::Buffer - Non-blocking output buffer.
 
 =head1 GLOBAL PARAMETERS
 
-$HTTP::Server::EV::Buffer::autoflush = 1024*50; # Default buffered data size in bytes when buffer starts waiting socket to be writable to send data. Setting 0 disables buffering, data will be send as soon as socket becomes writable.
+$HTTP::Server::EV::Buffer::autoflush = 1024*50; # Default buffered data size in bytes when buffer starts waiting socket to be writable to send data. Setting 0 disables buffering, data will be sent as soon as socket becomes writable.
 
 =cut
 
@@ -23,7 +23,10 @@ our $autoflush = 1024*10;
 
 =head1 METHODS
 
-=head2 new({ fh => $sock_handle , flush => autoflush threshold(optional), onerror => sub { onerror(disconect) optional callback} });
+=head2 new({ fh => $sock_handle , flush => autoflush_threshold(optional), 
+onerror => sub { onerror(disconect) optional callback}
+ondisconnect
+ });
 
 Creates new HTTP::Server::EV::Buffer object. 
 
@@ -44,7 +47,8 @@ sub new {
 	
 	$self->{flush} = $autoflush unless exists $self->{flush};
 	
-	$self->{fd} = fileno $self->{fh};
+	open $self->{fh}, '>&='.$self->{fd}; 
+	binmode $self->{fh};
 	
 	# break circular because onneror possible contains closure with H:S:E::CGI object that contains ref to buffer
 	#weaken $self->{onerror} if $self->{onerror};
@@ -55,7 +59,10 @@ sub new {
 	
 		my $bytes = send(
 			$self->{fh}, 
-			( $self->{flush} ? substr($self->{buffer}, 0, $self->{flush}) : $self->{buffer}),
+			( $self->{flush} ? 
+				substr($self->{buffer}, 0, $self->{flush}) : 
+				$self->{buffer}
+			),
 			0
 		);
 		

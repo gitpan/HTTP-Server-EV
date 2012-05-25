@@ -5,7 +5,10 @@ README
 t/HTTP-Server-EV.t
 EV/CGI.pm
 EV/MultipartFile.pm
+EV/PortListener.pm
 EV/Buffer.pm
 EV/BufTie.pm
+EV/IO/AIO.pm
+EV/IO/Blocking.pm
 EV.pm
 EV.xs

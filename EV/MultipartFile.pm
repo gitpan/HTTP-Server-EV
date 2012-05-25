@@ -1,7 +1,6 @@
 package HTTP::Server::EV::MultipartFile;
-use File::Copy;
 use strict;
-our $VERSION = '0.31';
+our $VERSION = '0.4';
 
 =head1 NAME
 
@@ -10,9 +9,9 @@ HTTP::Server::EV::MultipartFile - represents file received by L<HTTP::Server::EV
 =cut
 
 
-sub size {shift->{size}};
-sub name {shift->{name}};
-sub path {shift->{path}};
+sub size {$_[0]->{size}};
+sub name {$_[0]->{name}};
+sub path {$_[0]->{path}};
 
 
 =head1 FILE PARAMETERS
@@ -27,69 +26,34 @@ Filesize in bytes
 
 Filename received in http request
 
-=item $file->path or $file->{path}
-
-Path to tmp file. You don`t need to use this. Use $file->save() instead
-
 =back
 
 =head1 METHODS
 
-=head2 $file->fh;
+=head2 $file->fh ( sub { $handle = $_[0] or die 'can`t open file' });
 
-Returns filehandle opened to reading. Dies on error
+Returns filehandle opened to reading. 
+Callback is optional 
 
-=cut
+=head2 $file->save($path, sub { $_[0] or die 'save failed' }  );
 
-
-
-sub fh {
-	my $self = shift;
-	
-	unless($self->{fh}){
-		open ($self->{fh}, '<', $self->{path}) or die 'Can`t open tmp file '.$self->{path};
-		binmode $self->{fh};
-	}
-	
-	return $self->{fh};
-}
+Save received file to $path. Just moves file from tmp dir to $path if possible. 
+Callback is optional 
 
 
-=head2 $file->save($path);
+=head1 MultipartFile IMPLEMENTATIONS, BLOCKING AND CALLBACKS 
 
-Save received file to $path. Just moves file from tmp dir to $path if possible. Dies on error
+If callback specified it will always called after IO completion no matter what HTTP::Server::IO implementation used.
+
+If you use L<HTTP::Server::EV::IO::AIO> then only way to know ->save status is specify callback, because ->save call will return immediately and set saving to background. You can`t use ->fh without callback.
+
+If you use L<HTTP::Server::EV::IO::Blocking> then all IO operations will block program. You can use methods withouth a callbacks.
+
+If you use L<Coro> then HTTP::Server::EV::IO::AIO will act as HTTP::Server::EV::IO::Blocking and block current Coro thread if no callback specified, or return immediately and call callback if it specified.
 
 =cut
 
 
-sub save {
-	my ($self, $dest) = @_;
-	close delete $self->{fh} if $self->{fh};
-	
-	if($self->{moved}){
-		copy($self->{path}, $dest ) or die 'Can`t save tmp file '.$self->{path}.' to '.$dest;
-	}else{
-		move($self->{path}, $dest ) or die 'Can`t save tmp file '.$self->{path}.' to '.$dest;
-		$self->{path} = $dest;
-		$self->{moved} = 1;
-	}
-}
 
-
-=head2 $file->del;
-
-Deletes file from tmp directory. Automatically called on DESTROY
-
-=cut
-
-
-sub del {
-	my $self = shift;
-	
-	close $self->{fh} if $self->{fh};
-	unlink $self->{path} unless $self->{moved};
-}
-
-*DESTROY = \&del;
 
 1;

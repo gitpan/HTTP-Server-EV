@@ -5,17 +5,20 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+
 #define MAX_LISTEN_PORTS 24
 #define ALLOCATE 1
 #define BUFFERS_SIZE 4100
 
-#define MAX_FILES 50
 #define MAX_DATA 2048
-#define SOCKREAD_BUFSIZ 4096
-#define FILE_BUFSIZ 4096
+#define SOCKREAD_BUFSIZ 8192
+#define FILE_BUFSIZ 8192
 #define DATA_BUFSIZ 51200
 #define MAX_URLENCODED_BODY 102400
 
+
+
+#define REQ_DROPED_BY_PERL -1
 
 #define REQ_METHOD 1
 #define URL_STRING 2
@@ -38,11 +41,13 @@
 struct port_listener{
 	ev_io io;
 	SV* callback; 
+	SV* pre_callback;
 };
 
 struct req_state {
 	ev_io io;
-	SV *callback;
+	SV* callback;
+	SV* pre_callback;
 	
 	int saved_to;
 	
@@ -62,12 +67,19 @@ struct req_state {
 	
 	int multipart_data_count;
 	
+	// Socketread buffer
+	char *buffer;
+	int readed;
+	int buffer_pos;
 	
+	// Two bufers for http headers name and value, for request addres and multipart forminput name, filename
 	char *buf;
 	int buf_pos;
 	
 	char *buf2;
 	int buf2_pos;
+	
+	
 	
 	char *boundary;
 	int match_pos;
@@ -75,12 +87,13 @@ struct req_state {
 	char *data;
 	int data_pos;
 	
-	char *filepath; 
 	
-	PerlIO * tmpfile;
-	char *tmpbuffer;
-	int tmppos;
-	int tmpfilesize;
+	
+	char *tmpfile_buffer;
+	int tmpfile_buffer_pos;
+	
+	SV* tmpfile_obj;
+	
 	
 	HV* headers;
 	
@@ -91,119 +104,125 @@ struct req_state {
 	HV* file_a;
 	
 	HV* rethash;
+	SV* req_obj; //ref to rethash
 };
 
-///// Wrok with tempfiles
 
-	char tmpdir[BUFFERS_SIZE]={};
-	int dirstrlen = 0;
-	
-	void set_tmpdir (char *new_tmpdir){
-		strcpy (tmpdir, new_tmpdir);
-		dirstrlen = strlen(new_tmpdir);
+///// Work with tempfiles
+
+	static SV* create_tmp (struct req_state *state){
+		HV* hash = newHV();
+		state->tmpfile_obj = sv_bless( newRV_noinc((SV*) hash) ,   gv_stashpv( "HTTP::Server::EV::MultipartFile", GV_ADD) );
+		
+		hv_store(hash, "size", 4, (SV*) newSViv(0) , 0);
+		
+		SV* filename =newSVpv(state->buf2, state->buf2_pos);
+		SvUTF8_on(filename);
+		hv_store(hash, "name" , 4 , filename , 0);
+		
+		SV* parent = newSVsv(state->req_obj);
+		sv_rvweaken(parent);
+		hv_store(hash, "parent_req", 10, parent , 0);
+		
+		
+		dSP;
+		ENTER;
+		SAVETMPS;
+
+		PUSHMARK (SP);
+		XPUSHs (state->tmpfile_obj);
+
+		PUTBACK;
+			call_method ("_new", G_DISCARD);
+		// PUTBACK;
+		FREETMPS;
+		LEAVE;
+		
+		return state->tmpfile_obj;
 	}
 	
 	
-	void create_tmp (struct req_state *state){
-		int i;
-		//set filename
-		for(i = dirstrlen; i < dirstrlen+19 ; i++){ state->filepath[i] = 'a' + rand() % 26; }
-		state->filepath[dirstrlen+19]='\0';
+	static void tmp_putc (struct req_state *state, char chr){
 		
-		if(!( state->tmpfile = (PerlIO *) PerlIO_open(state->filepath, "w")) )
-		{ croak("HTTP::Server::EV ERROR: Can`t create tmp file!");};
+		state->tmpfile_buffer[state->tmpfile_buffer_pos] = chr;
+		state->tmpfile_buffer_pos++;
 		
 		
-		#ifdef USE_ITHREADS
-			PerlIO_binmode(NULL, (PerlIO *) state->tmpfile , '>' ,O_BINARY, NULL); 
-		#else
-			PerlIO_binmode( (PerlIO *) state->tmpfile , '>' ,O_BINARY, NULL); 
-		#endif
-		
-	}
-	
-	
-	SV* tmp_close(struct req_state *state){
-			if(!state->tmpfile){
-				if(state->tmppos <= 2){ return NULL; }
-				create_tmp(state);
-			}
+		if(state->tmpfile_buffer_pos >= FILE_BUFSIZ){
+			dSP;
+			ENTER;
+			SAVETMPS;
+
+			PUSHMARK (SP);
+			XPUSHs (state->tmpfile_obj);
+			XPUSHs ( sv_2mortal(
+				newSVpvn( state->tmpfile_buffer, FILE_BUFSIZ-2 )
+			));
 			
-			HV* hash = newHV();
-			hv_store(hash, "size", 4,(SV*) newSViv(state->tmpfilesize-2) , 0);
-			state->tmpfilesize = 0;
-			hv_store(hash, "path", 4, (SV*) newSVpv( state->filepath , dirstrlen+19 ), 0);
+			PUTBACK;
+				call_method ("_flush", G_DISCARD);
+			// PUTBACK;
+			FREETMPS;
+			LEAVE;
 			
-			SV* filename =newSVpv(state->buf2, state->buf2_pos);
-			SvUTF8_on(filename);
-			hv_store(hash, "name" , 4 , filename , 0);
-			
-			//PerlIO_write(state->tmpfile,state->tmpbuffer, state->tmppos > 2 ? state->tmppos-2 : 0);
-			PerlIO_write(state->tmpfile,state->tmpbuffer, state->tmppos-2);
-			state->tmppos = 0;
-			
-			PerlIO_close(state->tmpfile);
-			state->tmpfile = 0;
-			
-		return  sv_bless( newRV_noinc((SV*) hash) ,   gv_stashpv( "HTTP::Server::EV::MultipartFile", GV_ADD) );
-	} 
-	
-	
-	int tmp_putc(char chr, struct req_state *state){
-	
-		state->tmpbuffer[state->tmppos] = chr;
-		
-		state->tmpfilesize++;
-		
-		if(state->tmppos >= FILE_BUFSIZ){
-			if(!state->tmpfile){ create_tmp(state); printf(""); }
-			
-			PerlIO_write(state->tmpfile,state->tmpbuffer,FILE_BUFSIZ-1);
-			
-			state->tmpbuffer[0] = state->tmpbuffer[FILE_BUFSIZ-1];
-			state->tmpbuffer[1] = state->tmpbuffer[FILE_BUFSIZ];
-			
-			state->tmppos = 2;
-		} else {
-			state->tmppos++; 
+			state->tmpfile_buffer[0] = state->tmpfile_buffer[FILE_BUFSIZ-2];
+			state->tmpfile_buffer[1] = state->tmpfile_buffer[FILE_BUFSIZ-1];
+			state->tmpfile_buffer_pos = 2;
 		}
 	}
-
-	void unlink_all(struct req_state *state){
-		if(state->tmpfile){ 
-			PerlIO_close(state->tmpfile);
-			unlink(state->filepath);
-		}
+	
+	
+	static char tmp_close(struct req_state *state){
+		char wait = 0; // reports to main cycle if it need to return and wait for IO complete
 		
-		I32 interator = hv_iterinit(state->file_a);
-		HE* entry; int i;
-		for(i = 0; i < interator ; i++){
-			AV* arr = (AV*) SvRV( 
-				hv_iterval(  state->file_a, hv_iternext(state->file_a) ) 
-			);
-			
-			I32 len = av_len(arr)+1;
-			I32 key;
-			//printf("Arr %d\n",len);
-			for(key = 0; key < len ; key++){
-				HV* hash = (HV*) SvRV( *(av_fetch(arr, key, 0)) );
-				
-				char *path = SvPV_nolen( *(hv_fetch(hash, "path", 4, 0)) );
-				//printf("Path %s\n",path);
-				unlink(path);
-			}
-		}
-	}
+		
+		if(state->tmpfile_buffer_pos > 2){
+			wait = 1; 
+		
+			dSP;
+			ENTER;
+			SAVETMPS;
 
+			PUSHMARK (SP);
+			XPUSHs (state->tmpfile_obj);
+			XPUSHs ( sv_2mortal(
+				newSVpvn( state->tmpfile_buffer, state->tmpfile_buffer_pos-2 )
+			));
+			
+			PUTBACK;
+				call_method ("_flush", G_DISCARD);
+			// PUTBACK;
+			FREETMPS;
+			LEAVE;
+		};
+		
+		
+		dSP;
+		ENTER;
+		SAVETMPS;
+
+		PUSHMARK (SP);
+		XPUSHs (state->tmpfile_obj);
+
+		PUTBACK;
+			call_method ("_done", G_VOID);
+		// PUTBACK;
+		FREETMPS;
+		LEAVE;
+		
+		return wait;
+	}
+	
+	
 
 ///// parsers state saving and memory allocating /////
 struct req_state* *accepted;
-int accepted_pos = 0;
+static int accepted_pos = 0;
 
-int *accepted_stack;
-int accepted_stack_pos = 0;
+static int *accepted_stack;
+static int accepted_stack_pos = 0;
 
-int accepted_allocated = 0;
+static int accepted_allocated = 0;
 
 struct req_state * alloc_state (){
 
@@ -224,14 +243,16 @@ struct req_state * alloc_state (){
 		for(; i < accepted_allocated; i++){ 
 			accepted[i] = (struct req_state *) malloc( sizeof(struct req_state) );
 			
+			accepted[i]->buffer = (char *) malloc(SOCKREAD_BUFSIZ * sizeof(char) );
+			accepted[i]->tmpfile_buffer = (char *) malloc(FILE_BUFSIZ * sizeof(char));
+			
+			
 			accepted[i]->buf = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
 			accepted[i]->buf2 = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
+			
 			accepted[i]->boundary = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
 			accepted[i]->data = (char *) malloc(DATA_BUFSIZ * sizeof(char) );;
 			
-			accepted[i]->tmpbuffer = (char *) malloc(FILE_BUFSIZ * sizeof(char) );
-			accepted[i]->filepath = (char*) malloc(BUFFERS_SIZE * sizeof(char));
-			strcpy (accepted[i]->filepath, tmpdir);
 			
 			accepted_stack[accepted_stack_pos] = i;
 			accepted_stack_pos++;
@@ -242,8 +263,12 @@ struct req_state * alloc_state (){
 	
 	--accepted_stack_pos;
 	struct req_state *state = accepted[ accepted_stack[accepted_stack_pos] ];
+	state->saved_to = accepted_stack[accepted_stack_pos]; 
 	
 	//set fields to defaults
+	state->buffer_pos = 0;
+	state->tmpfile_buffer_pos = 0;
+	
 	memset(state->buf , 0 , BUFFERS_SIZE );
 	state->buf_pos = 0 ;
 	
@@ -269,10 +294,6 @@ struct req_state * alloc_state (){
 	//state->get_a = newHV();
 	state->data_pos = 0;
 	
-	state->tmpfile = 0;
-	state->tmppos = 0;
-	state->tmpfilesize = 0;
-	
 	state->multipart_name_match_pos = 0;
 	state->multipart_filename_match_pos = 0;
 	
@@ -288,28 +309,32 @@ struct req_state * alloc_state (){
 	
 	state->rethash = newHV();
 	
+	hv_store(state->rethash, "stack_pos", 9, (SV*) newSViv(state->saved_to) , 0);
+	
 	hv_store(state->rethash, "post" , 4, newRV_noinc((SV*)state->post), 0);
 	hv_store(state->rethash, "post_a" , 6, newRV_noinc((SV*)state->post_a), 0);
 	hv_store(state->rethash, "file" , 4, newRV_noinc((SV*)state->file), 0);
 	hv_store(state->rethash, "file_a" , 6, newRV_noinc((SV*)state->file_a), 0);
 	hv_store(state->rethash, "headers" , 7, newRV_noinc((SV*)state->headers), 0);
 	
-	state->saved_to = accepted_stack[accepted_stack_pos]; 
-	//accepted[ accepted_stack[accepted_stack_pos] ].saved_to = accepted_stack[accepted_stack_pos];
+	state->req_obj = sv_bless( 
+			newRV_noinc((SV*)state->rethash) ,
+			gv_stashpv( "HTTP::Server::EV::CGI", GV_ADD) 
+		);
+	
+
 	
 	return state; // return pointer to allocated struct
 }
 
 
-void del_state(struct req_state *state){
-
-	SvREFCNT_dec(state->rethash);
-	
+static void free_state(struct req_state *state){
+	SvREFCNT_dec(state->req_obj);
 	accepted_stack[accepted_stack_pos] = state->saved_to;
 	accepted_stack_pos++;
 }
 
-void push_to_hash(HV* hash, char *key, int  klen, SV* data){
+static void push_to_hash(HV* hash, char *key, int  klen, SV* data){
 		SV** arrayref;
 		if(hv_exists(hash, key, klen )){
 			if(arrayref = hv_fetch(hash, key, klen, 0)){
@@ -323,9 +348,9 @@ void push_to_hash(HV* hash, char *key, int  klen, SV* data){
 
 //////////////////////////////
 
-///// Stream parsing func /////
+///// Stream parsing /////
 
-int search(char input, char *line, int *match_pos ){
+static int search(char input, char *line, int *match_pos ){
 	if(input == line[ *match_pos ]){
 		(*match_pos)++;
 		
@@ -343,57 +368,99 @@ int search(char input, char *line, int *match_pos ){
 ///////////////////////
 
 //// Callbacks ////
-void call_perl(struct req_state *state, int socket){
-	hv_store(state->rethash, "fd", 2, newSViv(socket), 0);
+static void init_cgi_obj(struct req_state *state){
 	dSP;
 	ENTER;
 	SAVETMPS;
 	PUSHMARK(SP);
-	EXTEND(SP, 2);
-	PUSHs( sv_2mortal( newSViv(state->saved_to) ) );
-	PUSHs( sv_2mortal( newRV_inc((SV*)state->rethash) ) );
+	XPUSHs( state->req_obj );
 	PUTBACK;
 	
-	SV *cb = state->callback;
-	del_state( state );
-	
-	call_sv(cb, G_VOID);
+	call_method ("new", G_DISCARD);
 	
 	FREETMPS;
 	LEAVE;
-}
+};
+
+
+static void call_perl(struct req_state *state){
+	hv_store(state->rethash, "received", 8, newSViv(1) , 0);
+	
+	dSP;
+	ENTER;
+	SAVETMPS;
+	PUSHMARK(SP);
+	XPUSHs( state->req_obj );
+	PUTBACK;
+	
+	call_sv(state->callback, G_VOID);
+	free_state( state );
+	
+	
+	FREETMPS;
+	LEAVE;
+};
+
+static void call_pre_callback(struct req_state *state){
+	init_cgi_obj(state);
+	
+	dSP;
+	ENTER;
+	SAVETMPS;
+	PUSHMARK(SP);
+	XPUSHs( state->req_obj );
+	PUTBACK;
+	
+	
+	call_sv(state->pre_callback, G_VOID);
+	
+	FREETMPS;
+	LEAVE;
+};
+
 //////////
 
 static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 	struct req_state *state = (struct req_state *)w;
-	char buffer[SOCKREAD_BUFSIZ];
 	
 	struct sockaddr *buf;
 	int bufsize = sizeof(buf);
 	
-	int readed;
+	if(state->reading == REQ_DROPED_BY_PERL)
+			goto drop_conn;
 	
-	if( ( readed = PerlSock_recvfrom(w->fd, buffer, SOCKREAD_BUFSIZ,  0, buf, &bufsize) ) <= 0 ){
-		// connection closed or error
-		drop_conn:
-		unlink_all(state);
-		ev_io_stop(loop, w); 
-		del_state(state);
-		close( w->fd );
-		return;
-	}
-
-	int i;
-	for(i = 0; i < readed ; i++){
+	if(!state->buffer_pos){ //called to read new data
+		if( ( state->readed = PerlSock_recvfrom(w->fd, state->buffer, SOCKREAD_BUFSIZ,  0, buf, &bufsize) ) <= 0 ){
+			// connection closed or error
+			drop_conn:
+			
+			ev_io_stop(loop, w); 
+			close( w->fd );
+			free_state(state);
+			return;
+		}
+	} //else - woken up from suspending. Process existent data
 	
+	
+	//write only shit...
+	for(; state->buffer_pos < state->readed ; state->buffer_pos++ ){
+		
+		if(state->reading == REQ_DROPED_BY_PERL)
+			goto drop_conn;
+			
+		if(state->reading & (1 << 7))// 7 bit set - suspended
+			return;
+		
 		// Read req string
 		if(state->reading <= HEADERS_NOTHING) {
-			if( search( buffer[i], "\r\n", &state->headers_end_match_pos ) ){
+			if( search( state->buffer[state->buffer_pos], "\r\n", &state->headers_end_match_pos ) ){
 				
+				// only GET and POST supported
 				if((state->buf[0] != 'G' && // if not get
 					state->buf[0] != 'P' ) //and not post
 					|| !state->buf2_pos // or no url
-				){ goto drop_conn;} // gtfo faggot
+				){ goto drop_conn;} // gtfo
+				
 				
 				// save to headers hash
 				hv_store(state->headers, "REQUEST_METHOD" , 14 , newSVpv(state->buf, state->buf_pos) , 0);
@@ -405,22 +472,22 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 			}
 			
 			if(state->reading == URL_STRING){ // reading url string
-				if(buffer[i] == ' '){
+				if(state->buffer[state->buffer_pos] == ' '){
 					state->reading = HEADERS_NOTHING;
 				}
 				else{
-					state->buf2[ state->buf2_pos ] = buffer[i];
+					state->buf2[ state->buf2_pos ] = state->buffer[state->buffer_pos];
 					state->buf2_pos++;
 					if(state->buf2_pos >= BUFFERS_SIZE){ goto drop_conn; }
 				}
 			}
 			else if(state->reading == REQ_METHOD) { // reading request method
-				if( search(buffer[i], "POST ", &state->post_match_pos ) ){
+				if( search(state->buffer[state->buffer_pos], "POST ", &state->post_match_pos ) ){
 					strcpy(state->buf, "POST");
 					state->reading = URL_STRING;
 				}
 			
-				if( search(buffer[i], "GET ", &state->get_match_pos ) ){
+				if( search(state->buffer[state->buffer_pos], "GET ", &state->get_match_pos ) ){
 					strcpy(state->buf, "GET");
 					state->reading = URL_STRING;
 				}
@@ -429,7 +496,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 		}
 		// read headers
 		else if(state->reading <= HEADER_VALUE){
-			if( search( buffer[i], "\r\n", &state->headers_end_match_pos ) ){
+			if( search( state->buffer[state->buffer_pos], "\r\n", &state->headers_end_match_pos ) ){
 				
 				// end of headers
 				if(state->buf_pos == 1){
@@ -440,18 +507,19 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					str = SvPV_nolen(*hashval);
 					
 					// method POST
-					if( str[0] == 'P'){
-						if(! (hashval = hv_fetch(state->headers, "Content-Length" , 14 , 0) ) ){ goto drop_conn;}
+					if( strEQ("POST", str) ){
+						
+						if(! (hashval = hv_fetch(state->headers, "HTTP_CONTENT-LENGTH" , 19 , 0) ) ){ goto drop_conn;}
 						str = SvPV_nolen(*hashval);
 						
 						state->content_length = atoi(str);
 						
-						if(! (hashval = hv_fetch(state->headers, "Content-Type" , 12 , 0) ) ){ goto drop_conn;} // goto will never happen...
-						int len;
+						if(! (hashval = hv_fetch(state->headers, "HTTP_CONTENT-TYPE" , 17 , 0) ) ){ goto drop_conn;} // goto will never happen...
+						STRLEN len;
 						str = SvPV(*hashval, len);
 						
 						// multipart post data
-						if( str[0] == 'm' && str[1] == 'u' ){ 
+						if((len > 3) && (str[0]=='m' || str[0]=='M') && (str[1]=='u' || str[1]=='U') && (str[2]=='l' || str[2]=='L') ){ 
 							int i; int pos = 2;
 							char reading_boundary = 0;
 							state->boundary[0] = state->boundary[1] = '-';
@@ -463,14 +531,17 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 								}else
 								if(str[i] == '='){ reading_boundary = 1; }
 							}
+							if( (pos < 2) || !reading_boundary ){ goto drop_conn;}
+							
 							state->reading = BODY_M_NOTHING;
+							call_pre_callback(state);
 						}
 						// urlencoded data
 						else{ 
 							if(state->content_length > MAX_URLENCODED_BODY){ goto drop_conn;};
 							
 							state->reading = BODY_URLENCODED;
-							hv_store(state->rethash, "REQUEST_BODY" , 12 , newSVpv("", 0) , 0);
+							hv_store(state->rethash, "REQUEST_BODY" , 12 , newSV(1024) , 0);
 						}
 						
 						//printf("Boundary: %s \nLen: %d", state->boundary, state->content_length);
@@ -478,7 +549,8 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					}
 					// method GET
 					else {
-						call_perl(state, w->fd);
+						init_cgi_obj(state);
+						call_perl(state);
 						ev_io_stop(loop, w); 
 						break;
 					}
@@ -489,7 +561,27 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 				if(state->buf2_pos > 0){state->buf2_pos -= 1;}  // because we don`t need "\r" in value
 				
 				//save to headers hash
-				hv_store(state->headers, state->buf , state->buf_pos , newSVpv(state->buf2, state->buf2_pos) , 0);
+				SV* val = newSVpv(state->buf2, state->buf2_pos);
+				SvREFCNT_inc(val);
+				
+				hv_store(state->headers, state->buf , state->buf_pos , val , 0);
+				
+				
+				char uc_string[sizeof(state->buf)+6];
+				
+				uc_string[0]='H';
+				uc_string[1]='T';
+				uc_string[2]='T';
+				uc_string[3]='P';
+				uc_string[4]='_';
+				
+				int i = 0;
+				for(; i < state->buf_pos; i++){
+					uc_string[i+5] = toUPPER( state->buf[i] );
+				}
+				
+				hv_store(state->headers, uc_string , state->buf_pos+5 , val , 0);
+				
 				
 				end_headers_reading: 
 				state->buf_pos = 0;
@@ -497,19 +589,19 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 				
 				continue;
 			}
-			if( search( buffer[i], ": ", &state->headers_sep_match_pos) ){
+			if( search( state->buffer[state->buffer_pos], ": ", &state->headers_sep_match_pos) ){
 				state->buf_pos -= 1; // because we don`t need ":" in name
 				state->reading = HEADER_VALUE;
 				continue;
 			}
 			
 			if(state->reading == HEADER_NAME){ // read header name to buf
-				state->buf[ state->buf_pos ] = buffer[i];
+				state->buf[ state->buf_pos ] = state->buffer[state->buffer_pos];
 				state->buf_pos++;
 				if(state->buf_pos >= BUFFERS_SIZE){ goto drop_conn; }
 			}
 			else{  // read header value to buf2
-				state->buf2[ state->buf2_pos ] = buffer[i];
+				state->buf2[ state->buf2_pos ] = state->buffer[state->buffer_pos];
 				state->buf2_pos++;
 				if(state->buf2_pos >= BUFFERS_SIZE){ goto drop_conn; }
 			}
@@ -518,17 +610,18 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 		else if(state->reading == BODY_URLENCODED ){
 			SV** hashval; 
 			if(! (hashval = hv_fetch(state->rethash, "REQUEST_BODY" , 12 , 0) ) ){goto drop_conn;} // goto will never happen...
-			int bytes_to_read = readed - i;
+			int bytes_to_read = state->readed - state->buffer_pos;
 			
 			if( (state->total_readed + bytes_to_read) > state->content_length ){
 				bytes_to_read = state->content_length - state->total_readed;
 			}
 			
-			sv_catpvn(*hashval, &buffer[i] , bytes_to_read );
+			sv_catpvn(*hashval, &state->buffer[state->buffer_pos] , bytes_to_read );
 			state->total_readed += bytes_to_read;
 			
-			if( state->total_readed >= state->content_length ){ 
-				call_perl(state, w->fd);
+			if( state->total_readed >= state->content_length ){
+				init_cgi_obj(state);
+				call_perl(state);
 				ev_io_stop(loop, w); 
 				return;
 			};
@@ -540,7 +633,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 			//reading multipart data or file
 			if(state->reading < BODY_M_HEADERS){
 			
-				if(buffer[i] == state->boundary[state->match_pos]){
+				if(state->buffer[state->buffer_pos] == state->boundary[state->match_pos]){
 					state->match_pos++;
 					
 					if(! state->boundary[state->match_pos] ){ //matched all boundary
@@ -549,7 +642,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 								
 								if(state->reading == BODY_M_DATA){
 									SV* data =  newSVpv(
-										state->data_pos-2 ? state->data : "", 
+										state->data_pos-2 > 0 ? state->data : "", 
 										state->data_pos-2 );
 									SvUTF8_on(data);
 									
@@ -560,17 +653,19 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 									state->buf_pos = 0;
 								}
 								else if(state->reading == BODY_M_FILE){
-									SV* file = tmp_close(state);
-				
-									hv_store(state->file, state->buf , state->buf_pos , file , 0);
-									push_to_hash(state->file_a, state->buf, state->buf_pos, file );
-								
+								//end of file reading
 									state->buf_pos = 0;
 									state->buf2_pos = 0;
+									
+									state->reading = BODY_M_HEADERS;
+									
+									// processing always suspended after tmp_close call
+									if(tmp_close(state)) //tmp_close returns TRUE if needs wait for IO 
+										return;
 								}
 								
 								state->reading = BODY_M_HEADERS;
-								//headers_first_simb = 1;
+								
 					}
 				}
 				else{
@@ -587,20 +682,23 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 							}		
 						}
 								
-						state->data[state->data_pos] = buffer[i];
+						state->data[state->data_pos] = state->buffer[state->buffer_pos];
 						state->data_pos++;		
 						if(state->data_pos >= DATA_BUFSIZ){ goto drop_conn; }
 								
 					}
 					// reading form file
 					else if(state->reading == BODY_M_FILE){
-						if(state->match_pos){
-							int bound_i;
-							for(bound_i = 0; bound_i < state->match_pos; bound_i++){
-								tmp_putc(state->boundary[bound_i], state);
-							}
-						}
-						tmp_putc(buffer[i], state);
+						if(state->match_pos){ //append false boundary match
+							int bound_i = 0;
+							for(; bound_i < state->match_pos; bound_i++){
+								tmp_putc(state, state->boundary[bound_i]);
+							};
+						};
+							
+
+						//append char
+						tmp_putc(state, state->buffer[state->buffer_pos]);
 					};
 							
 					state->match_pos = 0;
@@ -612,36 +710,36 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					//buf2 - filename
 					
 				// searching for name
-				if(search(buffer[i], " name=\"", &state->multipart_name_match_pos) && !(state->buf_pos)){
+				if(search(state->buffer[state->buffer_pos], " name=\"", &state->multipart_name_match_pos) && !(state->buf_pos)){
 					state->reading = BODY_M_HEADERS_NAME;
 					//printf("Name match\n");
 					continue;
 				}
 				// reading name
 				else if(state->reading == BODY_M_HEADERS_NAME){
-					if(buffer[i] == '"'){
+					if(state->buffer[state->buffer_pos] == '"'){
 						state->reading = BODY_M_HEADERS;
 						continue;
 					}else{
-						state->buf[ state->buf_pos ] = buffer[i];
+						state->buf[ state->buf_pos ] = state->buffer[state->buffer_pos];
 						state->buf_pos++;
 						if(state->buf_pos >= BUFFERS_SIZE){ goto drop_conn; }
 					}
 				}
 				
 				// searching for filename
-				else if(!(state->buf2_pos) && search(buffer[i], "filename=\"", &state->multipart_filename_match_pos)){
+				else if(!(state->buf2_pos) && search(state->buffer[state->buffer_pos], "filename=\"", &state->multipart_filename_match_pos)){
 					state->reading = BODY_M_HEADERS_FILENAME;
 					//printf("FileName match\n");
 					continue;
 				}
 				// reading filename
 				else if(state->reading == BODY_M_HEADERS_FILENAME){
-					if(buffer[i] == '"'){
+					if(state->buffer[state->buffer_pos] == '"'){
 						state->reading = BODY_M_HEADERS;
 						continue;
 					}else{
-						state->buf2[ state->buf2_pos ] = buffer[i];
+						state->buf2[ state->buf2_pos ] = state->buffer[state->buffer_pos];
 						state->buf2_pos++;
 						if(state->buf2_pos >= BUFFERS_SIZE){ goto drop_conn; }
 					}
@@ -649,18 +747,28 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 				
 						
 				// searching for end of headers
-				if(search( buffer[i], "\r\n\r\n", &state->headers_end_match_pos) ){
+				if(search( state->buffer[state->buffer_pos], "\r\n\r\n", &state->headers_end_match_pos) ){
 
 					if( 
 						state->reading == BODY_M_HEADERS_NAME ||
 						state->reading == BODY_M_HEADERS_FILENAME //||
-					//	!state->buf_pos // Did some browsers may send form fields with empty name?
+					//	!state->buf_pos // Do some browsers may send form fields with empty name?
 					){ goto drop_conn; } //malformed multipart headers
 						
 					//printf("\nEnd of fileheader matched\n");	
 					
-					//filename defined or not
-					state->reading = state->buf2_pos ? BODY_M_FILE : BODY_M_DATA;
+					
+					if(state->buf2_pos){//filename defined 
+						state->reading =  BODY_M_FILE;
+						
+						// printf("create tmp\n");
+						SV* file = create_tmp(state);
+						hv_store(state->file, state->buf , state->buf_pos , file , 0);
+						push_to_hash(state->file_a, state->buf, state->buf_pos, file );
+					}else{
+						state->reading =  BODY_M_DATA;
+					}
+					
 					
 					if(state->multipart_data_count > MAX_DATA){ goto drop_conn; }
 					state->multipart_data_count++;
@@ -672,7 +780,8 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 			//end of stream
 			if( state->total_readed >= state->content_length ){ 
 				if( state->reading == BODY_M_HEADERS || state->reading == BODY_M_NOTHING ){
-					call_perl(state, w->fd);
+					// printf("call perl\n");
+					call_perl(state);
 					ev_io_stop(loop, w); 
 					return;
 				}
@@ -680,6 +789,8 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 			};
 		}
 	}
+	
+	state->buffer_pos = 0;
 }
 
 static void listen_cb (struct ev_loop *loop, ev_io *w, int revents){	
@@ -690,37 +801,22 @@ static void listen_cb (struct ev_loop *loop, ev_io *w, int revents){
 		int addrlen = sizeof(cliaddr);
 		
 		if( ( accepted_socket = accept( w->fd , (struct sockaddr *) &cliaddr, &addrlen ) ) == -1 )
-		{ croak("HTTP::Server::EV ERROR: Can`t accept connection. Enlarge your number of open file descriptors"); }; //ERROR: Enlarge your penis
+		{ croak("HTTP::Server::EV ERROR: Can`t accept connection. Enlarge your number of open file descriptors"); };
 		
-		struct req_state *connect_handler = alloc_state();
-		connect_handler->callback = listener->callback;
+		struct req_state *state = alloc_state();
+		state->callback = listener->callback;
+		state->pre_callback = listener->pre_callback;
 		
-		hv_store(connect_handler->headers, "REMOTE_ADDR" , 11 , newSVpv(inet_ntoa( cliaddr.sin_addr ), 0 ) , 0);
+		hv_store(state->headers, "REMOTE_ADDR" , 11 , newSVpv(inet_ntoa( cliaddr.sin_addr ), 0 ) , 0);
+		hv_store(state->rethash, "fd", 2, newSViv(accepted_socket), 0);
 		
-		//handler_cb(loop, &connect_handler->io, revents);
-		
-		ev_io_init (&connect_handler->io, handler_cb, accepted_socket , EV_READ);
-		ev_io_start ( loop, &connect_handler->io);
-		
+		ev_io_init (&state->io, handler_cb, accepted_socket , EV_READ);
+		ev_io_start ( loop, &state->io);
 }
 
 
-struct port_listener listeners[MAX_LISTEN_PORTS];
-int listeners_pos = 0;
 
 
-
-void listen_socket(PerlIO* sock, SV* callback){
-			
-		SvREFCNT_inc(callback);
-		listeners[listeners_pos].callback = callback;
-		
-		ev_io_init (&listeners[listeners_pos].io, listen_cb, PerlIO_fileno((PerlIO*)*sock), EV_READ);
-		ev_io_start (EV_DEFAULT, &listeners[listeners_pos].io);
-		
-		listeners_pos++;
-		
-}
 
 MODULE = HTTP::Server::EV	PACKAGE = HTTP::Server::EV	
 
@@ -732,66 +828,73 @@ BOOT:
 }
 
 
-void
-listen_socket ( sock , callback)
+SV*
+listen_socket ( sock ,callback, pre_callback)
 	PerlIO* sock
 	SV* callback
-	PREINIT:
-	I32* temp;
-	PPCODE:
-	temp = PL_markstack_ptr++;
-	listen_socket(sock,callback);
-	if (PL_markstack_ptr != temp) {
-          /* truly void, because dXSARGS not invoked */
-	  PL_markstack_ptr = temp;
-	  XSRETURN_EMPTY; /* return empty stack */
-        }
-        /* must have used dXSARGS; list context implied */
-	return; /* assume stack size is correct */
-	
-	
-void
-close_socket ( fdesc )
-	int fdesc
-	PREINIT:
-	I32* temp;
-	PPCODE:
-	temp = PL_markstack_ptr++;
-	close( fdesc );
-	if (PL_markstack_ptr != temp) {
-          /* truly void, because dXSARGS not invoked */
-	  PL_markstack_ptr = temp;
-	  XSRETURN_EMPTY; /* return empty stack */
-        }
-        /* must have used dXSARGS; list context implied */
-	return; /* assume stack size is correct */
-	
-	
+	SV* pre_callback
+	CODE:
+		SvREFCNT_inc(callback);
+		SvREFCNT_inc(pre_callback);
+		
+		struct port_listener* listener = (struct port_listener *) malloc(sizeof(struct port_listener));
+		listener->callback = callback;
+		listener->pre_callback = pre_callback;
+		
+		ev_io_init(&(listener->io), listen_cb, PerlIO_fileno((PerlIO*)*sock), EV_READ);
+		ev_io_start(EV_DEFAULT, &(listener->io));
+		
+		SV* magic_sv = newSV(0);
+		sv_magicext (magic_sv , 0, PERL_MAGIC_ext, NULL, (const char *) &(listener->io), 0);
+		RETVAL = magic_sv;
+	OUTPUT:
+		RETVAL
 	
 void
-set_tmpdir ( new_tmp )
-	char *new_tmp
-	PREINIT:
-	I32* temp;
-	PPCODE:
-	temp = PL_markstack_ptr++;
-	set_tmpdir(new_tmp);
-	if (PL_markstack_ptr != temp) {
-          /* truly void, because dXSARGS not invoked */
-	  PL_markstack_ptr = temp;
-	  XSRETURN_EMPTY; /* return empty stack */
-        }
-        /* must have used dXSARGS; list context implied */
-	return; /* assume stack size is correct */
+stop_listen (self )	
+	SV* self
+	CODE:
+		MAGIC *mg = SvMAGIC (self);
+		ev_io_stop(EV_DEFAULT, (ev_io *) mg->mg_ptr); 
 
-	
-	
-SV * get_request( stack_pos )
-	int stack_pos
-    CODE:
-        RETVAL =  newRV_inc((SV*)accepted[ stack_pos ]->rethash);
-		del_state( accepted[ stack_pos ] );
-    OUTPUT:
+void
+start_listen ( self )	
+		SV* self
+	CODE:
+		MAGIC *mg = SvMAGIC (self);
+		ev_io_start(EV_DEFAULT, (ev_io *) mg->mg_ptr); 	
+
+void
+stop_req( saved_to )	
+	int saved_to
+	CODE:
+		accepted[saved_to]->reading |= 1 << 7; // 7 bit set - suspended
+		ev_io_stop(EV_DEFAULT, &(accepted[saved_to]->io)); 
+		
+
+SV*
+start_req( saved_to )	
+	int saved_to
+	CODE:
+		accepted[saved_to]->reading &= ~(1 << 7); // 7 bit null - working
+		ev_io_start(EV_DEFAULT, &(accepted[saved_to]->io)); 
+		
+		// if(accepted[saved_to]->buffer_pos)
+		// ev_feed_fd_event(EV_DEFAULT, &(accepted[saved_to]->io), 0);
+		// No ev_feed_fd_event in EV XS API :(
+		// Pass fd and do it from perl
+		
+		RETVAL = accepted[saved_to]->buffer_pos ? newSViv(accepted[saved_to]->io.fd) : newSV(0);
+		
+		
+	OUTPUT:
         RETVAL
 		
+void
+drop_req( saved_to )	
+	int saved_to
+	CODE:
+		accepted[saved_to]->reading == REQ_DROPED_BY_PERL;
+		ev_io_start(EV_DEFAULT, &(accepted[saved_to]->io)); 
+	
 		

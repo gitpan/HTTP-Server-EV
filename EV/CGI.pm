@@ -5,11 +5,13 @@ use bytes;
 use Encode;
 use Carp;
 use Time::HiRes qw(gettimeofday tv_interval);
+use Scalar::Util qw/weaken/;
+no warnings;
 
 use HTTP::Server::EV::Buffer;
 use HTTP::Server::EV::BufTie;
 
-our $VERSION = '0.31';
+our $VERSION = '0.4';
 
 =head1 NAME
 
@@ -78,27 +80,18 @@ our $cookies_lifetime = 3600*24*31;
 #$cgi->new({ fd => sock fileno , post => {}, get => {} , headers => {} .... });
 
 # new called only by HTTP::Server::EV 
-sub new { 
-	my($pkg, $self) = @_;
-	
-	bless $self, $pkg;
+sub new { # init all structures
+	my($self) = @_;
 	
 	$self->start_timer;
 	
-	open my $fh, '>&='.$self->{fd}; 
-	binmode $fh;
-	
-	$self->{buffer} = HTTP::Server::EV::Buffer->new({ fh => $fh });
+	$self->{buffer} = HTTP::Server::EV::Buffer->new({ fd => $self->{fd} });
 	$self->{stdout_guard} = [];
 	
-	## Parse headers. CGI compatible
+	## Parse headers. CGI.pm compatible
 	( $self->{headers}{SCRIPT_NAME}, $self->{headers}{QUERY_STRING} ) =(split /\?/, $self->{headers}{REQUEST_URI});
 	
 	$self->{headers}{DOCUMENT_URI} = $self->{headers}{SCRIPT_NAME};
-	
-	for(keys %{$self->{headers}}){
-		$self->{headers}->{'HTTP_'.uc($_)}=$self->{headers}->{$_};
-	}
 	
 	$self->{headers}{REMOTE_ADDR} = $self->{headers}{'HTTP_X-REAL-IP'} if($HTTP::Server::EV::backend && $self->{headers}{'HTTP_X-REAL-IP'});
 	$self->{headers}{CONTENT_TYPE} = $self->{headers}{'HTTP_CONTENT-TYPE'};
@@ -148,11 +141,11 @@ sub new {
 
 =head2 $cgi->next
 
-Ends port listener callback processing. Don`t use it somewhere except HTTP::Server::EV port listener callback or set goto label NEXT_REQ: 
+Drops port listener callback processing. Don`t use it somewhere except HTTP::Server::EV port listener callback or set goto label NEXT_REQ: 
 
 =cut
 
-sub next { goto NEXT_REQ ; };
+sub next { $_[0]->{received} ? goto(NEXT_REQ) : $_[0]-> drop};
 
 =head2 $cgi->fd
 
@@ -260,6 +253,7 @@ Flush all buffered data and close received connection.
 
 sub close { 
 	delete $_[0]->{buffer}; # From 0.21 HTTP::Server::EV::Buffer closes socket
+	$_[0]->{stdout_guard} = []; # close all attached handles
 	#CORE::close $_[0]->{fh} ;
 	#HTTP::Server::EV::close_socket( $_[0]->{fd} );
 };
@@ -357,7 +351,7 @@ sub header {
 
 =head2 $cgi->urldecode( $str );
 
-Returns urlecoded utf8 string
+Returns urldecoded utf8 string
 
 =cut
 
@@ -371,13 +365,54 @@ sub urldecode {
 	return $tmp;
 };
 	
-#sub DESTROY  {
-	#$_[0]->close; # Since 0.21 HTTP::Server::EV::Buffer closes socket
+
+
+
+
+
+=head1 NOT RECEIVED REQUEST METHODS
+
+You can call these methods only after HTTP::Server::EV::PortListener on_multipart callback, when server receives POST data. You shouldn`t call them after request has received. 
+
+=head2 $cgi->stop;
+
+Stop request processing
+
+=head2 $cgi->start;
+
+Starts stopped request processing. 
+
+=head2 $cgi->drop;
+
+Drop user connection
+
+=cut
+
+
+sub stop { HTTP::Server::EV::stop_req($_[0]->{stack_pos}); 1}
+
+sub start {
+	my $fd = HTTP::Server::EV::start_req($_[0]->{stack_pos});
+	EV::feed_fd_event($fd, EV::READ) if defined $fd;
+	1;
+}
+
+sub drop { 
+	HTTP::Server::EV::drop_req($_[0]->{stack_pos});
+	EV::feed_fd_event($_[0]->{fd}, EV::READ);
+}
+
+
+
+
+
+
+sub DESTROY {
 	
-	# Since 0.21 HTTP::Server::EV::MultipartFile deletes itself on DESTROY
-	#for my $arr_ref (values %{$_[0]->{file_a}}){
-	#	$_->del for(@{$arr_ref});
-	#}
-#};
+	if(!$_[0]->{received} and $_[0]->{parent_listener}{on_error}) {
+		$_[0]->{parent_listener}{on_error}->($_[0]) if $_[0]->{parent_listener}{on_error};
+	}
+	
+}
 
 1;

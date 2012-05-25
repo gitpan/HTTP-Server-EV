@@ -1,4 +1,5 @@
 package HTTP::Server::EV;
+no warnings;
 
 =head1 NAME
 
@@ -12,14 +13,25 @@ It doesn`t load files received in the POST request in memory as moust of CGI mod
 =head1 INCLUDED MODULES
 
 L<HTTP::Server::EV::CGI> - received http request object
+
 L<HTTP::Server::EV::MultipartFile> - received file object
+
 L<HTTP::Server::EV::Buffer> - non blocking output
+
 L<HTTP::Server::EV::BufTie> - workaround for correct handling requests in L<Coro> threads
+
+L<HTTP::Server::EV::IO::AIO> - Non-blocking disk IO. 
+
+L<HTTP::Server::EV::IO::Blocking> - Blocking IO.
+
 
 =head1 SYNOPSIS
 
 	use EV;
+	use Coro;
 	use HTTP::Server::EV;
+	
+	
 	my $server = HTTP::Server::EV->new;
 	
 	$server->listen(90, sub {
@@ -30,7 +42,8 @@ L<HTTP::Server::EV::BufTie> - workaround for correct handling requests in L<Coro
 
 		print "Just another Perl server\n";
 	});
-	EV::loop;
+	
+	EV::run;
 
 
 =cut
@@ -41,25 +54,28 @@ use strict;
 use Encode;
 use Socket;
 use utf8;
+use Scalar::Util qw/weaken/;
+
+use HTTP::Server::EV::CGI;
+use HTTP::Server::EV::MultipartFile;
+use HTTP::Server::EV::PortListener;
 
 
 require Exporter;
 *import = \&Exporter::import;
 require DynaLoader;
 
-$HTTP::Server::EV::VERSION = '0.31';
+$HTTP::Server::EV::VERSION = '0.4';
 DynaLoader::bootstrap HTTP::Server::EV $HTTP::Server::EV::VERSION;
 
 @HTTP::Server::EV::EXPORT = ();
 @HTTP::Server::EV::EXPORT_OK = ();
 
-our @sockets;
+our %listeners;
 our $backend;
 
 
-###################################
-use HTTP::Server::EV::CGI;
-use HTTP::Server::EV::MultipartFile;
+
 
 
 =head1 METHODS
@@ -92,8 +108,16 @@ Default: 0
 
 =cut
 
+
+
+
+our $tmp_path;
+our $instance;
+
 sub new {
 	my ($self, $params) = @_;
+	
+	return $instance if $instance;
 	
 	$params->{tmp_path} = './upload_tmpfiles/' unless($params->{tmp_path});
 	unless(-d($params->{tmp_path})){
@@ -101,20 +125,31 @@ sub new {
 	}
 	$params->{tmp_path} =~ s|([^/])^|$1/|;
 	
+	$HTTP::Server::EV::tmp_path = $params->{tmp_path};
+	
 	$backend = $params->{backend};
 	
-	set_tmpdir($params->{tmp_path}); # internal XS method, don`t call it from your program
 	
+	if(eval { require HTTP::Server::EV::IO::AIO }){
+		HTTP::Server::EV::IO::AIO->_use_me;
+	}else{
+		require HTTP::Server::EV::IO::Blocking;
+		HTTP::Server::EV::IO::Blocking->_use_me;
+	}
 	
-	bless $params, $self;
+	eval { HTTP::Server::EV::Coro->_use_me };
+	
+	$instance = bless $params, $self;
+	
 }
 
 
-=head2 listen( port , sub {callback} )
+=head2 listen( port , sub {req_received_callback} , { optional parameters and multipart processing callbacks })
 
 
-Binds callback to port. Calls callback and passes HTTP::Server::EV::CGI object in it;
-	
+Binds callback to port. Calls callback and passes L<HTTP::Server::EV::CGI> object in it. Returns L<HTTP::Server::EV::PortListener> obeject, you can keep it and use to stop port listening.
+
+
 	$server->listen( 8080 , sub {
 		my $cgi = shift;
 		
@@ -124,12 +159,63 @@ Binds callback to port. Calls callback and passes HTTP::Server::EV::CGI object i
 		
 		print "Test page";
 	});
+	
+
+
+	
+	$server->listen( 8080 , sub {
+		#req_received_callback
+		my $cgi = shift;
+		
+		$cgi->attach(local *STDOUT); # attach STDOUT to socket
+		
+		$cgi->header; # print http headers to stdout
+		
+		print "Test page";
+	}, { 
+		threading => 1, # run every req_received_callback in Coro thread. "use Coro;" first
+		
+		# you needn't specify all callbacks
+	
+		on_multipart => sub {
+			my ($cgi) = @_;
+			# called on multipart body receiving start
+		},
+		
+		on_file_open => sub {
+			my ($cgi, $multipart_file_obj ) = @_;
+			# called on multipart file receiving start
+		},
+		
+		on_file_write => sub {
+			my ($cgi, $multipart_file_obj, $data_chunk ) = @_;
+			# called when file part writed to disk. 
+			# usefur for on flow calculting hashes like md5 
+			# or just to know progress by reading  $multipart_file_obj->{size}
+		},
+		
+		on_file_received => sub {
+			my ($cgi, $multipart_file_obj) = @_;
+			# called on file writing done
+		},
+		
+		on_error => sub {
+			my ($cgi) = @_;
+			# called when server drops multipart post connection
+		}
+		
+	});
+	
+
 
 =cut
 
 
-sub listen{
-	my ($self, $port, $cb) = @_;
+	
+sub listen {
+	my ($self, $port, $cb, $params) = @_;
+	
+	die "You can`t bind two listeners on one port!\n" if $listeners{$port};
 	
 	my $socket;
 	socket($socket, AF_INET, SOCK_STREAM, getprotobyname('tcp')) || die "socket: $!";
@@ -138,9 +224,9 @@ sub listen{
 	listen( $socket, SOMAXCONN) || die "listen: $!";
 	binmode $socket;
 	
-	listen_socket($socket, sub { 
-		my $stack_pos = shift; # unused
-		my $cgi = HTTP::Server::EV::CGI->new(shift);
+	
+	sub _main_cb { 
+		my $cgi = $_[0];
 		
 		eval { $cb->($cgi); };
 		if($@){ warn "ERROR IN CALLBACK: $@"; }
@@ -149,10 +235,32 @@ sub listen{
 		
 		NEXT_REQ:
 		$cgi->close;
-	});
+	};
 	
-	push @sockets, $socket;
+	$listeners{$port} = HTTP::Server::EV::PortListener -> new({
+		ptr => 
+			listen_socket($socket, 
+			$params->{threading} ? sub { Coro::async(\&_main_cb, @_) } : \&_main_cb ,  
+			sub { 
+				$_[0]->{parent_listener} = $listeners{$port};
+				weaken $_[0]->{parent_listener};
+				
+				$listeners{$port}->{on_multipart}->(@_) if $listeners{$port}->{on_multipart};
+			}),
+			
+		socket => $socket,
+		
+		%{ $params },
+		# on_multipart
+		# on_file_open
+		# on_file_write
+		# on_file_received
+		# on_error
+	});
 }
+
+
+
 
 
 =head2 cleanup
@@ -173,23 +281,12 @@ sub DESTROY {
 }
 
 sub dl_load_flags {0}; # Prevent DynaLoader from complaining and croaking
-1;
 
-=head1 TODO
-
-Write tests
-
-Write request parser error handling - Server drops connection on error(Malformed or too large request), but there is no way to know what error happened.
-
-unbind function
 
 =head1 BUGS/WARNINGS
 
-You can`t create two HTTP::Server::EV objects at same process.
-
 Static allocated buffers:
 
-- Can`t listen more than 20 ports at same time
 
 - 4kb for GET/POST form field names
 
@@ -204,3 +301,7 @@ HTTP::Server::EV drops connection if some buffer overflows. You can change these
 
 This module is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself.
+
+=cut
+
+1;

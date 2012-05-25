@@ -1,5 +1,14 @@
 Revision history for Perl extension HTTP::Server::EV.
 
+0.4 
+	- Written tests
+	- HTTP::Server::EV::PortListener module
+	- Rewritten disk IO code. Now it can use built in perl functions or IO::AIO module.
+	- Fixed segfault when uploading zero size file
+	- Multipart processing callbacks. 
+	- Coro support
+
+
 0.31  
 	- Fixed non ARRAY reference error when cgi->param called in list context with nonexistent param name
 	- Added explicit type-casting, no more compiler warnings
