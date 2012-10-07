@@ -29,7 +29,7 @@ unless (eval { require IO::AIO }){
 my %options = (
   'TYPEMAPS' => [],
   'NAME' => 'HTTP::Server::EV',
-  'VERSION' => '0.4',
+  'VERSION' => '0.41',
   'OPTIMIZE' => ' -O2',
   'BUILD_REQUIRES' => $req,
   

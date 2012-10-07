@@ -4,7 +4,7 @@ use File::Copy;
 use File::Util qw/escape_filename/;
 
 
-sub _use_me { # i not use ISA for performance
+sub _use_me { # i'm not using ISA for performance
 	*HTTP::Server::EV::MultipartFile::save = *save;
 	*HTTP::Server::EV::MultipartFile::fh = *fh;
 	*HTTP::Server::EV::MultipartFile::DESTROY = *DESTROY;
@@ -16,7 +16,7 @@ sub _use_me { # i not use ISA for performance
 }
 
 
-our $VERSION = '0.4';
+our $VERSION = '0.41';
 
 =head1 NAME
 
@@ -61,10 +61,8 @@ sub fh {
 
 
 sub DESTROY {
-	my $self = shift;
-	
-	close $self->{fh} if $self->{fh};
-	unlink $self->{path} unless $self->{moved};
+	close delete $_[0]->{fh} if $_[0]->{fh};
+	unlink delete $_[0]->{path} if ($_[0]->{path} and !($_[0]->{moved}));
 }
 
 

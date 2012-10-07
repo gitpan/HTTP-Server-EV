@@ -7,7 +7,7 @@ use Scalar::Util qw/weaken/;
 use File::Util qw/escape_filename/;
 no warnings;
 
-sub _use_me { # i not use ISA for performance
+sub _use_me { # i'm not using ISA for performance
 	*HTTP::Server::EV::MultipartFile::save = *save;
 	*HTTP::Server::EV::MultipartFile::fh = *fh;
 	*HTTP::Server::EV::MultipartFile::close = *close;
@@ -20,7 +20,7 @@ sub _use_me { # i not use ISA for performance
 }
 
 
-our $VERSION = '0.4';
+our $VERSION = '0.41';
 
 =head1 NAME
 
@@ -30,21 +30,21 @@ HTTP::Server::EV::IO::AIO - Implments L<HTTP::Server::EV::MultipartFile> using L
 
 sub save {
 	my ($self, $dest, $cb) = @_;
-	
 	$self->close(sub {
 	
 		if( $self->{moved} ){
 			aio_copy $self->{path}, $dest, sub{
-				warn __PACKAGE__." failed to copy file to $dest - $! \n" unless ($_ = ($_[0] < 0));
+				warn __PACKAGE__." failed to copy file $self->{path} to $dest - $! \n" 
+					unless ($_ = ($_[0] >= 0));
 				$cb->($_) if $cb;
 			}
 		} else {
 			aio_move $self->{path}, $dest, sub {
-				if($_ = ($_[0] < 0)) {
-					warn __PACKAGE__." failed to move file to $dest - $! \n" 
-				} else {
+				if($_ = ($_[0] >= 0)) {
 					$self->{path} = $dest;
 					$self->{moved} = 1;
+				} else {
+					warn __PACKAGE__." failed to move file $self->{path} to $dest - $! \n"
 				}
 				$cb->($_) if $cb;
 			};
@@ -54,18 +54,21 @@ sub save {
 	
 	if(!$cb and $Coro::current and $_[0]->{parent_req}{parent_listener}{threading}) {
 		$cb = Coro::rouse_cb();
-		
 		return Coro::rouse_wait();
 	}
-	
+	1;
 };
 
 
 sub DESTROY {
 	my ($self) = @_;
+	
+	return unless $self->{path}; # one of my programs called destructor two times and i'm to lazy to find why
+	
 	$self->close(sub {
 		aio_unlink ( $self->{path}, sub {
-			warn __PACKAGE__." failed to delete file - $! \n" if ($_ = ($_[0] < 0));
+			warn __PACKAGE__." failed to delete file $self->{path} - $! \n" if ($_[0] < 0);
+			delete $self->{path};
 		}) unless $self->{moved};
 	});
 }
@@ -76,8 +79,13 @@ sub fh {
 	
 	
 	if($self->{fh}){
-		die "HTTP::Server::EV::IO::AIO->fh used without a callback. Use Coro and enable threading for listener if you want blocking interface\n" unless $cb;
-		$cb->($self->{fh});
+		if($cb){
+			$cb->($self->{fh});
+		}
+		elsif(!$_[0]->{parent_req}{parent_listener}{threading}){
+			die "HTTP::Server::EV::IO::AIO->fh used without a callback. Use Coro and enable threading for listener if you want blocking interface\n"
+		}
+		
 		return $self->{fh};
 	};
 	
@@ -87,22 +95,22 @@ sub fh {
 		IO::AIO::O_CREAT , 
 		0755, sub {
 			if($_[0] < 0){
-				warn __PACKAGE__." failed to open file - $! \n";
+				warn __PACKAGE__." failed to open file $self->{path} - $! \n";
 				$cb->(undef);
 			} else {
 				binmode(($self->{fh} = $_[0]));
 				$cb->($self->{fh});
 			}
 		};
-		
-	if(!$cb and $Coro::current and $_[0]->{parent_req}{parent_listener}{threading}) {
-		$cb = Coro::rouse_cb();
-		return Coro::rouse_wait();
+	unless( $cb ){
+		if($Coro::current and $_[0]->{parent_req}{parent_listener}{threading}) {
+			$cb = Coro::rouse_cb();
+			return Coro::rouse_wait();
+		}
+		else {
+			die "HTTP::Server::EV::IO::AIO->fh used without a callback. Use Coro and enable threading for listener if you want blocking interface\n"
+		}
 	}
-	elsif(!$cb) {
-		die "HTTP::Server::EV::IO::AIO->fh used without a callback. Use Coro and enable threading for listener if you want blocking interface\n"
-	}
-	
 };
 
 
@@ -110,16 +118,17 @@ sub fh {
 sub close {
 	my ($self, $cb) = @_;
 	
-	$cb->() unless $self->{fh};
+	$cb->(1) unless $self->{fh};
 	
 	aio_close $self->{fh}, sub {
-		if ($_[0] < 0) {
-			warn __PACKAGE__." failed to close file - $! \n";
-		} else {
+		if ($_ = ($_[0] >= 0) ) {
 			close delete $self->{fh};
-			$cb->();
+		} else {
+			warn __PACKAGE__." failed to close file $self->{path} - $! \n";
 		};
+		$cb->($_);
 	};
+	1;
 }
 
 
@@ -159,10 +168,9 @@ sub _flush {
 			$self->{parent_req}{parent_listener}{on_file_write}->( $self->{parent_req}, $self, $data) 
 				if $self->{parent_req}{parent_listener}{on_file_write};
 			
-			
 			$self->{parent_req}->start;
 		} else {
-			warn __PACKAGE__." failed to write file - $! \n";
+			warn __PACKAGE__." failed to write file $self->{path} - $! \n";
 			$self->{parent_req}->drop;
 		};
 	});

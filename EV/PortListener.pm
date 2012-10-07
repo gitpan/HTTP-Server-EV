@@ -1,6 +1,6 @@
 package HTTP::Server::EV::PortListener;
 use strict;
-our $VERSION = '0.4';
+our $VERSION = '0.41';
 
 =head1 NAME
 

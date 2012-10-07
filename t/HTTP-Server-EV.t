@@ -5,12 +5,18 @@ use blib;
 use utf8;
 use Data::Dumper;
 
+
+
+
+
 use Test::More tests => 27;
 use AnyEvent::HTTP;
 use HTTP::Request::Common;
 
 
 BEGIN { use_ok('HTTP::Server::EV') };
+
+
 
 my $server = HTTP::Server::EV->new;
 
@@ -23,7 +29,7 @@ my $on_file_write_data;
 my @on_file_received_args;
 my @on_error_args;
 
-use Coro;
+my @threading = eval { require Coro } ? ( threading => 1 ) : ();
 
 $server->listen( 11111 , sub {
 		my $cgi = shift;
@@ -38,7 +44,8 @@ $server->listen( 11111 , sub {
 		$last_req = $cgi;
 		$last_req->close;	
 	}, { 
-		threading => 1,
+		@threading,
+		
 		
 		on_multipart => sub {
 			@on_multipart_args = @_;

@@ -11,7 +11,7 @@ no warnings;
 use HTTP::Server::EV::Buffer;
 use HTTP::Server::EV::BufTie;
 
-our $VERSION = '0.4';
+our $VERSION = '0.41';
 
 =head1 NAME
 

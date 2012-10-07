@@ -1,5 +1,8 @@
 Revision history for Perl extension HTTP::Server::EV.
 
+0.41 
+	- Bugfixes
+
 0.4 
 	- Written tests
 	- HTTP::Server::EV::PortListener module
