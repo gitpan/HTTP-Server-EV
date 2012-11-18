@@ -15,6 +15,7 @@ DEPENDENCIES
 	Time::HiRes
 	File::Copy
 	File::Util
+	Scalar::Util
 	Guard
 	
 	Optional:

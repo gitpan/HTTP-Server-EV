@@ -1,6 +1,6 @@
 use strict;
 no warnings;
-
+use Socket;
 use blib;
 use utf8;
 use Data::Dumper;
@@ -9,7 +9,7 @@ use Data::Dumper;
 
 
 
-use Test::More tests => 27;
+use Test::More tests => 29;
 use AnyEvent::HTTP;
 use HTTP::Request::Common;
 
@@ -46,6 +46,7 @@ $server->listen( 11111 , sub {
 	}, { 
 		@threading,
 		
+		timeout => 2 , 
 		
 		on_multipart => sub {
 			@on_multipart_args = @_;
@@ -129,6 +130,25 @@ sub {
 },
 
 sub {
+	no utf8;
+	use bytes;
+
+		socket(my $socket, PF_INET, SOCK_STREAM, getprotobyname('tcp'));
+		connect($socket, sockaddr_in( 11111 ,inet_aton( '127.0.0.1' ) ));binmode $socket;
+		
+		send ($socket,  q|POST testtesttest.....|, 0);
+		
+		$main::w = EV::io $socket, EV::READ, sub {
+		
+			is( read( $socket, $_, 1), 0 , 'timeout' );
+			$main::w = undef;
+			
+			call_next_test;
+		};
+},
+
+
+sub {
 	print "\n------- POST\n";
 	no utf8;
 	use bytes;
@@ -163,8 +183,35 @@ sub {
 sub {
 	no utf8;
 	use bytes;
+	my $req = POST "", 
+		Content_Type => 'form-data',
+		Content      => [
+			('a' x 99999 )   => 'test_текст_utf8_тест',
+			cp1251 => 'test_текст_utf8_тест',
+		];
+	no bytes;
+	use utf8;
+		
+		http_post 'http://127.0.0.1:11111/',
+			$req->content,
+			headers => {
+				'Content-Type' => $req->header('Content-Type')
+			},
+		sub {
+			is( ref( @on_error_args[0]), 'HTTP::Server::EV::CGI' ,'POST on_error callback' );
+			@on_error_args[0] = undef; # for ne
+			call_next_test;
+		};
+},
+
+
+
+
+sub {
+	no utf8;
+	use bytes;
 	
-	my $content = '123456789' x 4096;
+	my $content = '1234567890' x (1024 * 1024); # 10mb file
 	
 	my $req = POST "", 
 		Content_Type => 'form-data',
@@ -172,7 +219,7 @@ sub {
 			utf8   => 'test_текст_utf8_тест',
 			cp1251 => 'test_текст_utf8_тест',
 			
-			file => [undef, '../.\..:<>utf8_файл'.chr(0).'.jpg', Content => $content]
+			file => [undef, '../.\..:<>utf8_файл'.chr(0).'.jpg', Content => $content],
 		];
 	no bytes;
 	use utf8;

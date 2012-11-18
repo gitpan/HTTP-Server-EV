@@ -1,5 +1,5 @@
 package HTTP::Server::EV::Buffer;
-our $VERSION = '0.41';
+our $VERSION = '0.5';
 
 use strict;
 use bytes;

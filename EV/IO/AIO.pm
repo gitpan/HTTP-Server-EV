@@ -20,7 +20,7 @@ sub _use_me { # i'm not using ISA for performance
 }
 
 
-our $VERSION = '0.41';
+our $VERSION = '0.5';
 
 =head1 NAME
 
@@ -63,7 +63,7 @@ sub save {
 sub DESTROY {
 	my ($self) = @_;
 	
-	return unless $self->{path}; # one of my programs called destructor two times and i'm to lazy to find why
+	return unless $self->{path}; # one of my programs called destructor two times and i'm too lazy to find why
 	
 	$self->close(sub {
 		aio_unlink ( $self->{path}, sub {

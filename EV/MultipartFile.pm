@@ -1,6 +1,6 @@
 package HTTP::Server::EV::MultipartFile;
 use strict;
-our $VERSION = '0.41';
+our $VERSION = '0.5';
 
 =head1 NAME
 
@@ -52,7 +52,6 @@ If you use L<HTTP::Server::EV::IO::Blocking> then all IO operations will block p
 If you use L<Coro> then HTTP::Server::EV::IO::AIO will act as HTTP::Server::EV::IO::Blocking and block current Coro thread if no callback specified, or return immediately and call callback if it specified.
 
 =cut
-
 
 
 

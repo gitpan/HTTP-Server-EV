@@ -11,7 +11,7 @@ no warnings;
 use HTTP::Server::EV::Buffer;
 use HTTP::Server::EV::BufTie;
 
-our $VERSION = '0.41';
+our $VERSION = '0.5';
 
 =head1 NAME
 
@@ -408,11 +408,6 @@ sub drop {
 
 
 sub DESTROY {
-	
-	if(!$_[0]->{received} and $_[0]->{parent_listener}{on_error}) {
-		$_[0]->{parent_listener}{on_error}->($_[0]) if $_[0]->{parent_listener}{on_error};
-	}
-	
 }
 
 1;

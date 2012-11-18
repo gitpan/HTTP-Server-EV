@@ -65,7 +65,7 @@ require Exporter;
 *import = \&Exporter::import;
 require DynaLoader;
 
-$HTTP::Server::EV::VERSION = '0.41';
+$HTTP::Server::EV::VERSION = '0.5';
 DynaLoader::bootstrap HTTP::Server::EV $HTTP::Server::EV::VERSION;
 
 @HTTP::Server::EV::EXPORT = ();
@@ -175,8 +175,12 @@ Binds callback to port. Calls callback and passes L<HTTP::Server::EV::CGI> objec
 	}, { 
 		threading => 1, # run every req_received_callback in Coro thread. "use Coro;" first
 		
+		timeout => 1*60 , # server drops request if there is no activity on socket after "timeout" sec. 1min default. Set 0 to disable
+		#This is for not fully received requests, received requests aren't affected and you can keep request object with socket as long as you need it.
+		
+		#multipart processing callbacks
 		# you needn't specify all callbacks
-	
+		
 		on_multipart => sub {
 			my ($cgi) = @_;
 			# called on multipart body receiving start
@@ -189,8 +193,8 @@ Binds callback to port. Calls callback and passes L<HTTP::Server::EV::CGI> objec
 		
 		on_file_write => sub {
 			my ($cgi, $multipart_file_obj, $data_chunk ) = @_;
-			# called when file part writed to disk. 
-			# usefur for on flow calculting hashes like md5 
+			# called when file part written to disk. 
+			# useful for on flow calculting hashes like md5 
 			# or just to know progress by reading  $multipart_file_obj->{size}
 		},
 		
@@ -201,7 +205,8 @@ Binds callback to port. Calls callback and passes L<HTTP::Server::EV::CGI> objec
 		
 		on_error => sub {
 			my ($cgi) = @_;
-			# called when server drops multipart post connection
+			# called when server drops multipart post connection. 
+			# also called when you manually reject connection by calling $cgi_obj->drop;
 		}
 		
 	});
@@ -239,14 +244,22 @@ sub listen {
 	
 	$listeners{$port} = HTTP::Server::EV::PortListener -> new({
 		ptr => 
-			listen_socket($socket, 
-			$params->{threading} ? sub { Coro::async(\&_main_cb, @_) } : \&_main_cb ,  
-			sub { 
-				$_[0]->{parent_listener} = $listeners{$port};
-				weaken $_[0]->{parent_listener};
+			listen_socket( # socket, cb, on_multipart_cb, on_error, timeout
+				$socket,
 				
-				$listeners{$port}->{on_multipart}->(@_) if $listeners{$port}->{on_multipart};
-			}),
+				$params->{threading} ? sub { Coro::async(\&_main_cb, @_) } : \&_main_cb ,  
+				sub { 
+					$_[0]->{parent_listener} = $listeners{$port};
+					weaken $_[0]->{parent_listener};
+					
+					$listeners{$port}->{on_multipart}->(@_) if $listeners{$port}->{on_multipart};
+				},
+				sub { 
+					$listeners{$port}->{on_error}->(@_) if $listeners{$port}->{on_error};
+				},
+				
+				( $params->{timeout} // 60 ) # 60 if undef
+			),
 			
 		socket => $socket,
 		

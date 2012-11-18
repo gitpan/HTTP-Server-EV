@@ -1,6 +1,6 @@
 package HTTP::Server::EV::PortListener;
 use strict;
-our $VERSION = '0.41';
+our $VERSION = '0.5';
 
 =head1 NAME
 
@@ -8,11 +8,11 @@ HTTP::Server::EV::PortListener - Port listener
 
 =head1 METHODS
 
-=head2 $liener->stop;
+=head2 $listener->stop;
 
 Stops listening port. All already running requests will be processed
 
-=head2 $liener->start;
+=head2 $listener->start;
 
 Starts listening port.
 
@@ -29,6 +29,7 @@ sub start {
 sub stop {
 	HTTP::Server::EV::stop_listen($_[0]->{ptr});
 }
+
 
 
 1;

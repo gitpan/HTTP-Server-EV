@@ -7,17 +7,16 @@
 
 
 #define MAX_LISTEN_PORTS 24
-#define ALLOCATE 1
+#define ALLOCATE 1 
 #define BUFFERS_SIZE 4100
 
-#define MAX_DATA 2048
+#define MAX_DATA 2048 //max multipart form fields
 #define SOCKREAD_BUFSIZ 8192
-#define FILE_BUFSIZ 8192
-#define DATA_BUFSIZ 51200
+#define BODY_CHUNK_BUFSIZ 51200 //multipart form field value limited by one chunk size. Also it's file receiving buffer - file piece stored on disc(and on_file_write_called) when BODY_CHUNK_BUFSIZ bytes received
 #define MAX_URLENCODED_BODY 102400
 
 
-
+// parser state. Don't change!
 #define REQ_DROPED_BY_PERL -1
 
 #define REQ_METHOD 1
@@ -38,16 +37,23 @@
 #define BODY_M_HEADERS_NAME 11
 #define BODY_M_HEADERS_FILENAME 12
 
-struct port_listener{
+struct port_listener {
 	ev_io io;
+	
 	SV* callback; 
 	SV* pre_callback;
+	SV* error_callback;
+	
+	float timeout;
 };
 
 struct req_state {
 	ev_io io;
-	SV* callback;
-	SV* pre_callback;
+	struct port_listener *parent_listener;
+	
+	ev_tstamp timeout;
+	ev_timer timer;
+	
 	
 	int saved_to;
 	
@@ -84,13 +90,10 @@ struct req_state {
 	char *boundary;
 	int match_pos;
 	
-	char *data;
-	int data_pos;
+	//buffer for text input data and file chunks
+	char *body_chunk;
+	int body_chunk_pos;
 	
-	
-	
-	char *tmpfile_buffer;
-	int tmpfile_buffer_pos;
 	
 	SV* tmpfile_obj;
 	
@@ -124,6 +127,7 @@ struct req_state {
 		sv_rvweaken(parent);
 		hv_store(hash, "parent_req", 10, parent , 0);
 		
+		state->body_chunk_pos = 0;
 		
 		dSP;
 		ENTER;
@@ -144,11 +148,11 @@ struct req_state {
 	
 	static void tmp_putc (struct req_state *state, char chr){
 		
-		state->tmpfile_buffer[state->tmpfile_buffer_pos] = chr;
-		state->tmpfile_buffer_pos++;
+		state->body_chunk[state->body_chunk_pos] = chr;
+		state->body_chunk_pos++;
 		
 		
-		if(state->tmpfile_buffer_pos >= FILE_BUFSIZ){
+		if(state->body_chunk_pos >= BODY_CHUNK_BUFSIZ){
 			dSP;
 			ENTER;
 			SAVETMPS;
@@ -156,7 +160,7 @@ struct req_state {
 			PUSHMARK (SP);
 			XPUSHs (state->tmpfile_obj);
 			XPUSHs ( sv_2mortal(
-				newSVpvn( state->tmpfile_buffer, FILE_BUFSIZ-2 )
+				newSVpvn( state->body_chunk, BODY_CHUNK_BUFSIZ-2 )
 			));
 			
 			PUTBACK;
@@ -165,9 +169,9 @@ struct req_state {
 			FREETMPS;
 			LEAVE;
 			
-			state->tmpfile_buffer[0] = state->tmpfile_buffer[FILE_BUFSIZ-2];
-			state->tmpfile_buffer[1] = state->tmpfile_buffer[FILE_BUFSIZ-1];
-			state->tmpfile_buffer_pos = 2;
+			state->body_chunk[0] = state->body_chunk[BODY_CHUNK_BUFSIZ-2];
+			state->body_chunk[1] = state->body_chunk[BODY_CHUNK_BUFSIZ-1];
+			state->body_chunk_pos = 2;
 		}
 	}
 	
@@ -176,7 +180,7 @@ struct req_state {
 		char wait = 0; // reports to main cycle if it need to return and wait for IO complete
 		
 		
-		if(state->tmpfile_buffer_pos > 2){
+		if(state->body_chunk_pos > 2){
 			wait = 1; 
 		
 			dSP;
@@ -186,7 +190,7 @@ struct req_state {
 			PUSHMARK (SP);
 			XPUSHs (state->tmpfile_obj);
 			XPUSHs ( sv_2mortal(
-				newSVpvn( state->tmpfile_buffer, state->tmpfile_buffer_pos-2 )
+				newSVpvn( state->body_chunk, state->body_chunk_pos-2 )
 			));
 			
 			PUTBACK;
@@ -244,14 +248,12 @@ struct req_state * alloc_state (){
 			accepted[i] = (struct req_state *) malloc( sizeof(struct req_state) );
 			
 			accepted[i]->buffer = (char *) malloc(SOCKREAD_BUFSIZ * sizeof(char) );
-			accepted[i]->tmpfile_buffer = (char *) malloc(FILE_BUFSIZ * sizeof(char));
-			
 			
 			accepted[i]->buf = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
 			accepted[i]->buf2 = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
 			
 			accepted[i]->boundary = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
-			accepted[i]->data = (char *) malloc(DATA_BUFSIZ * sizeof(char) );;
+			accepted[i]->body_chunk = (char *) malloc(BODY_CHUNK_BUFSIZ * sizeof(char));
 			
 			
 			accepted_stack[accepted_stack_pos] = i;
@@ -267,7 +269,7 @@ struct req_state * alloc_state (){
 	
 	//set fields to defaults
 	state->buffer_pos = 0;
-	state->tmpfile_buffer_pos = 0;
+	state->body_chunk_pos = 0;
 	
 	memset(state->buf , 0 , BUFFERS_SIZE );
 	state->buf_pos = 0 ;
@@ -292,7 +294,6 @@ struct req_state * alloc_state (){
 	
 	//state->get = newHV();
 	//state->get_a = newHV();
-	state->data_pos = 0;
 	
 	state->multipart_name_match_pos = 0;
 	state->multipart_filename_match_pos = 0;
@@ -386,6 +387,8 @@ static void init_cgi_obj(struct req_state *state){
 static void call_perl(struct req_state *state){
 	hv_store(state->rethash, "received", 8, newSViv(1) , 0);
 	
+	ev_timer_stop(EV_DEFAULT, &(state->timer) ); 
+	
 	dSP;
 	ENTER;
 	SAVETMPS;
@@ -393,7 +396,7 @@ static void call_perl(struct req_state *state){
 	XPUSHs( state->req_obj );
 	PUTBACK;
 	
-	call_sv(state->callback, G_VOID);
+	call_sv(state->parent_listener->callback, G_VOID);
 	free_state( state );
 	
 	
@@ -412,13 +415,40 @@ static void call_pre_callback(struct req_state *state){
 	PUTBACK;
 	
 	
-	call_sv(state->pre_callback, G_VOID);
+	call_sv(state->parent_listener->pre_callback, G_VOID);
 	
 	FREETMPS;
 	LEAVE;
 };
 
+static void drop_conn (struct req_state *state, struct ev_loop *loop){
+	
+	if (state->reading >= BODY_M_NOTHING || state->reading == REQ_DROPED_BY_PERL){
+		dSP;
+		ENTER;
+		SAVETMPS;
+		PUSHMARK(SP);
+		XPUSHs( state->req_obj );
+		PUTBACK;
+		
+		call_sv(state->parent_listener->error_callback, G_VOID);
+		
+		FREETMPS;
+		LEAVE;
+	}
+	
+	ev_io_stop(loop, &(state->io) ); 
+	ev_timer_stop(EV_DEFAULT, &(state->timer) ); 
+	
+	close( state->io.fd );
+	free_state(state);
+}
 //////////
+
+static void timer_cb(struct ev_loop *loop, ev_timer *w, int revents) {
+	drop_conn( (struct req_state *) w->data , loop);
+}
+
 
 static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 	struct req_state *state = (struct req_state *)w;
@@ -427,20 +457,19 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 	int bufsize = sizeof(buf);
 	
 	if(state->reading == REQ_DROPED_BY_PERL)
-			goto drop_conn;
+		goto drop_conn;
 	
 	if(!state->buffer_pos){ //called to read new data
 		if( ( state->readed = PerlSock_recvfrom(w->fd, state->buffer, SOCKREAD_BUFSIZ,  0, buf, &bufsize) ) <= 0 ){
 			// connection closed or error
 			drop_conn:
-			
-			ev_io_stop(loop, w); 
-			close( w->fd );
-			free_state(state);
-			return;
+				drop_conn(state, loop);
+				return;
 		}
 	} //else - woken up from suspending. Process existent data
-	
+	//reset timeout
+	if (state->timeout != 0.)
+		ev_timer_again(loop, &(state->timer));
 	
 	//write only shit...
 	for(; state->buffer_pos < state->readed ; state->buffer_pos++ ){
@@ -642,14 +671,14 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 								
 								if(state->reading == BODY_M_DATA){
 									SV* data =  newSVpv(
-										state->data_pos-2 > 0 ? state->data : "", 
-										state->data_pos-2 );
+										state->body_chunk_pos-2 > 0 ? state->body_chunk : "", 
+										state->body_chunk_pos-2 );
 									SvUTF8_on(data);
 									
 									hv_store(state->post, state->buf , state->buf_pos , data , 0) ;
 									push_to_hash(state->post_a , state->buf , state->buf_pos, data);
 									
-									state->data_pos = 0;
+									state->body_chunk_pos = 0;
 									state->buf_pos = 0;
 								}
 								else if(state->reading == BODY_M_FILE){
@@ -675,16 +704,16 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 							int bound_i;
 									
 							for(bound_i = 0; bound_i < state->match_pos; bound_i++){
-								state->data[state->data_pos] = state->boundary[bound_i];
-								state->data_pos++;
+								state->body_chunk[state->body_chunk_pos] = state->boundary[bound_i];
+								state->body_chunk_pos++;
 										
-								if(state->data_pos >= DATA_BUFSIZ){ goto drop_conn; }
+								if(state->body_chunk_pos >= BODY_CHUNK_BUFSIZ){ goto drop_conn; }
 							}		
 						}
 								
-						state->data[state->data_pos] = state->buffer[state->buffer_pos];
-						state->data_pos++;		
-						if(state->data_pos >= DATA_BUFSIZ){ goto drop_conn; }
+						state->body_chunk[state->body_chunk_pos] = state->buffer[state->buffer_pos];
+						state->body_chunk_pos++;		
+						if(state->body_chunk_pos >= BODY_CHUNK_BUFSIZ){ goto drop_conn; }
 								
 					}
 					// reading form file
@@ -752,7 +781,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					if( 
 						state->reading == BODY_M_HEADERS_NAME ||
 						state->reading == BODY_M_HEADERS_FILENAME //||
-					//	!state->buf_pos // Do some browsers may send form fields with empty name?
+					//	!state->buf_pos // Did some browsers may send form fields with empty name?
 					){ goto drop_conn; } //malformed multipart headers
 						
 					//printf("\nEnd of fileheader matched\n");	
@@ -804,14 +833,24 @@ static void listen_cb (struct ev_loop *loop, ev_io *w, int revents){
 		{ croak("HTTP::Server::EV ERROR: Can`t accept connection. Enlarge your number of open file descriptors"); };
 		
 		struct req_state *state = alloc_state();
-		state->callback = listener->callback;
-		state->pre_callback = listener->pre_callback;
+		
+		state->parent_listener = listener;
+		state->timeout = listener->timeout;
 		
 		hv_store(state->headers, "REMOTE_ADDR" , 11 , newSVpv(inet_ntoa( cliaddr.sin_addr ), 0 ) , 0);
 		hv_store(state->rethash, "fd", 2, newSViv(accepted_socket), 0);
 		
+		
 		ev_io_init (&state->io, handler_cb, accepted_socket , EV_READ);
 		ev_io_start ( loop, &state->io);
+		
+		
+		if (state->timeout != 0) {
+			ev_timer_init(&state->timer, timer_cb, 0., listener->timeout);
+			state->timer.data = (void *) state;
+			
+			ev_timer_again(loop, &(state->timer));
+		}
 }
 
 
@@ -829,17 +868,23 @@ BOOT:
 
 
 SV*
-listen_socket ( sock ,callback, pre_callback)
+listen_socket ( sock ,callback, pre_callback, error_callback, timeout)
 	PerlIO* sock
 	SV* callback
 	SV* pre_callback
+	SV* error_callback
+	float timeout
 	CODE:
 		SvREFCNT_inc(callback);
 		SvREFCNT_inc(pre_callback);
+		SvREFCNT_inc(error_callback);
 		
 		struct port_listener* listener = (struct port_listener *) malloc(sizeof(struct port_listener));
+		
 		listener->callback = callback;
 		listener->pre_callback = pre_callback;
+		listener->error_callback = error_callback;
+		listener->timeout = timeout;
 		
 		ev_io_init(&(listener->io), listen_cb, PerlIO_fileno((PerlIO*)*sock), EV_READ);
 		ev_io_start(EV_DEFAULT, &(listener->io));
@@ -868,23 +913,29 @@ void
 stop_req( saved_to )	
 	int saved_to
 	CODE:
-		accepted[saved_to]->reading |= 1 << 7; // 7 bit set - suspended
-		ev_io_stop(EV_DEFAULT, &(accepted[saved_to]->io)); 
+		struct req_state *state = accepted[saved_to];
+		state->reading |= 1 << 7; // 7 bit set - suspended
+		
+		if (state->timeout != 0.) ev_timer_stop(EV_DEFAULT, &state->timer);
+		ev_io_stop(EV_DEFAULT, &(state->io)); 
 		
 
 SV*
 start_req( saved_to )	
 	int saved_to
 	CODE:
-		accepted[saved_to]->reading &= ~(1 << 7); // 7 bit null - working
-		ev_io_start(EV_DEFAULT, &(accepted[saved_to]->io)); 
+		struct req_state *state = accepted[saved_to];
 		
-		// if(accepted[saved_to]->buffer_pos)
-		// ev_feed_fd_event(EV_DEFAULT, &(accepted[saved_to]->io), 0);
+		state->reading &= ~(1 << 7); // 7 bit null - working
+		ev_io_start(EV_DEFAULT, &(state->io)); 
+		if (state->timeout != 0.) ev_timer_again(EV_DEFAULT, &state->timer);
+		
+		// if(state->buffer_pos)
+		// ev_feed_fd_event(EV_DEFAULT, &(state->io), 0);
 		// No ev_feed_fd_event in EV XS API :(
 		// Pass fd and do it from perl
 		
-		RETVAL = accepted[saved_to]->buffer_pos ? newSViv(accepted[saved_to]->io.fd) : newSV(0);
+		RETVAL = state->buffer_pos ? newSViv(state->io.fd) : newSV(0);
 		
 		
 	OUTPUT:
@@ -894,7 +945,7 @@ void
 drop_req( saved_to )	
 	int saved_to
 	CODE:
-		accepted[saved_to]->reading == REQ_DROPED_BY_PERL;
+		accepted[saved_to]->reading = REQ_DROPED_BY_PERL;
 		ev_io_start(EV_DEFAULT, &(accepted[saved_to]->io)); 
 	
 		
