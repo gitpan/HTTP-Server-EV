@@ -11,7 +11,7 @@ no warnings;
 use HTTP::Server::EV::Buffer;
 use HTTP::Server::EV::BufTie;
 
-our $VERSION = '0.5';
+our $VERSION = '0.6';
 
 =head1 NAME
 
@@ -48,6 +48,10 @@ To get reference to array of all elements with same name ( selects, checkboxes, 
 =item $cgi->post('filed_name')
 
 =item $cgi->file('filed_name')
+
+=back
+
+=over
 
 =item $cgi->param('filed_name');
 
@@ -153,7 +157,7 @@ Returns file descriptor (int)
 
 =cut
 
-sub fd { shift->{fd} }
+sub fd { $_[0]->{fd} }
 
 =head2 $cgi->fh
 
@@ -175,7 +179,7 @@ Returns handle tied to L<HTTP::Server::EV::Buffer> object. Writing to this handl
 =cut
 
 sub buffer { 
-	croak 'Can`t geet buffered handle from closed socket!' unless $_[0]->{buffer};
+	croak 'Can`t get buffered handle from closed socket!' unless $_[0]->{buffer};
 	
 	tie($_[0]->{buf_fh}, 'HTTP::Server::EV::Buffer', $_[0]->{buffer}) unless $_[0]->{buf_fh};
 	
@@ -280,7 +284,7 @@ sub post { return $_[0]->{post_a}{$_[1]} ? $_[0]->{post_a}{$_[1]} : [] ;}
 sub file { return $_[0]->{file_a}{$_[1]} ? $_[0]->{file_a}{$_[1]} : [] ;}
 sub param {
 	if(wantarray){
-		return @{$_[0]->{get_a}{$_[1]} || []} || @{$_[0]->{post_a}{$_[1]} || []};
+		return( (@{$_[0]->{get_a}{$_[1]} || []}) ? @{$_[0]->{get_a}{$_[1]}}  : @{$_[0]->{post_a}{$_[1]} || []} );
 	}else{
 		return $_[0]->{get}{$_[1]} || $_[0]->{post}{$_[1]};
 	}
@@ -408,6 +412,7 @@ sub drop {
 
 
 sub DESTROY {
+	HTTP::Server::EV::start_listen($_[0]->{parent_listener}{ptr}) unless $_[0]->{parent_listener}{stopped};
 }
 
 1;

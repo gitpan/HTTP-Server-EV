@@ -1,5 +1,15 @@
 Revision history for Perl extension HTTP::Server::EV.
 
+0.6
+	- Implemented HTTP::Server::EV::Buffer onerror(ondisconnect) callback
+	- Listen now can accept IO::Socket::INET object with socket to listen
+	- Added support of sharing one listening socket per several forks, and fork_hook cb to integrate with fork managers
+	- Fixed bug when only first defined port listener worked
+	- Fixed segfault when starting/stopping PortListener
+
+0.5
+	- Implemented timeout for not received connections
+
 0.41 
 	- Bugfixes
 

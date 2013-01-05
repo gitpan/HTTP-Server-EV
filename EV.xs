@@ -4,6 +4,7 @@
 #include "EVAPI.h"
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <errno.h>
 
 
 #define MAX_LISTEN_PORTS 24
@@ -36,6 +37,15 @@
 #define BODY_M_HEADERS 10
 #define BODY_M_HEADERS_NAME 11
 #define BODY_M_HEADERS_FILENAME 12
+
+
+// #ifdef WIN32
+	// #include <windows.h>
+	// #define errno WSAGetLastError()
+// #endif
+		
+		
+
 
 struct port_listener {
 	ev_io io;
@@ -240,20 +250,21 @@ struct req_state * alloc_state (){
 				( accepted = (struct req_state **) realloc(accepted,  accepted_allocated * sizeof(struct req_state*) ) ) && 
 				( accepted_stack = (int *) realloc(accepted_stack,  accepted_allocated * sizeof(int) ) )
 			)
-		  ){ croak("CRITICAL ERROR: Can`t allocate memory for saving stream parser state."); }
+		  ){ return NULL; }
 
 		
 		// push in stack list of free to use elements
 		for(; i < accepted_allocated; i++){ 
-			accepted[i] = (struct req_state *) malloc( sizeof(struct req_state) );
+			if(!( accepted[i] = (struct req_state *) malloc( sizeof(struct req_state) ) )){ return NULL; }
 			
-			accepted[i]->buffer = (char *) malloc(SOCKREAD_BUFSIZ * sizeof(char) );
 			
-			accepted[i]->buf = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
-			accepted[i]->buf2 = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
+			if(!( accepted[i]->buffer = (char *) malloc(SOCKREAD_BUFSIZ * sizeof(char) ) )){ return NULL; }
 			
-			accepted[i]->boundary = (char *) malloc(BUFFERS_SIZE * sizeof(char) );
-			accepted[i]->body_chunk = (char *) malloc(BODY_CHUNK_BUFSIZ * sizeof(char));
+			if(!( accepted[i]->buf = (char *) malloc(BUFFERS_SIZE * sizeof(char) ) )){ return NULL; }
+			if(!( accepted[i]->buf2 = (char *) malloc(BUFFERS_SIZE * sizeof(char) ) )){ return NULL; }
+			
+			if(!( accepted[i]->boundary = (char *) malloc(BUFFERS_SIZE * sizeof(char) ) )){ return NULL; }
+			if(!( accepted[i]->body_chunk = (char *) malloc(BODY_CHUNK_BUFSIZ * sizeof(char)) )){ return NULL; }
 			
 			
 			accepted_stack[accepted_stack_pos] = i;
@@ -441,6 +452,8 @@ static void drop_conn (struct req_state *state, struct ev_loop *loop){
 	ev_timer_stop(EV_DEFAULT, &(state->timer) ); 
 	
 	close( state->io.fd );
+	
+	ev_io_start(EV_DEFAULT, &( state->parent_listener->io) ); 	
 	free_state(state);
 }
 //////////
@@ -830,9 +843,23 @@ static void listen_cb (struct ev_loop *loop, ev_io *w, int revents){
 		int addrlen = sizeof(cliaddr);
 		
 		if( ( accepted_socket = accept( w->fd , (struct sockaddr *) &cliaddr, &addrlen ) ) == -1 )
-		{ croak("HTTP::Server::EV ERROR: Can`t accept connection. Enlarge your number of open file descriptors"); };
+		{ 
+			// printf("error %d %d\n", errno, EAGAIN);
+			if(errno == EAGAIN){ // event received by another child process
+				return;
+			}
+			warn("HTTP::Server::EV ERROR: Can`t accept connection. Run out of open file descriptors! Listening stopped until one of the server connection will be closed!");
+			
+			ev_io_stop(EV_DEFAULT, &(listener->io)); 
+		};
 		
 		struct req_state *state = alloc_state();
+		
+		if(!state){
+			warn("HTTP::Server::EV ERROR: Can`t allocate memory for connection state. Connection dropped!");
+			close(accepted_socket);
+			return;
+		}
 		
 		state->parent_listener = listener;
 		state->timeout = listener->timeout;
@@ -863,13 +890,16 @@ PROTOTYPES: DISABLE
 
 BOOT:
 {
-			I_EV_API ("HTTP::Server::EV");
+	I_EV_API ("HTTP::Server::EV");
+#ifdef WIN32
+	_setmaxstdio(2048); 
+#endif
 }
 
 
 SV*
 listen_socket ( sock ,callback, pre_callback, error_callback, timeout)
-	PerlIO* sock
+	int sock
 	SV* callback
 	SV* pre_callback
 	SV* error_callback
@@ -879,6 +909,9 @@ listen_socket ( sock ,callback, pre_callback, error_callback, timeout)
 		SvREFCNT_inc(pre_callback);
 		SvREFCNT_inc(error_callback);
 		
+		
+		
+		
 		struct port_listener* listener = (struct port_listener *) malloc(sizeof(struct port_listener));
 		
 		listener->callback = callback;
@@ -886,17 +919,17 @@ listen_socket ( sock ,callback, pre_callback, error_callback, timeout)
 		listener->error_callback = error_callback;
 		listener->timeout = timeout;
 		
-		ev_io_init(&(listener->io), listen_cb, PerlIO_fileno((PerlIO*)*sock), EV_READ);
+		ev_io_init(&(listener->io), listen_cb, sock, EV_READ);
 		ev_io_start(EV_DEFAULT, &(listener->io));
 		
-		SV* magic_sv = newSV(0);
+		SV* magic_sv = newSViv( (int) &(listener->io));
 		sv_magicext (magic_sv , 0, PERL_MAGIC_ext, NULL, (const char *) &(listener->io), 0);
 		RETVAL = magic_sv;
 	OUTPUT:
 		RETVAL
 	
 void
-stop_listen (self )	
+stop_listen (self)	
 	SV* self
 	CODE:
 		MAGIC *mg = SvMAGIC (self);
@@ -906,8 +939,14 @@ void
 start_listen ( self )	
 		SV* self
 	CODE:
-		MAGIC *mg = SvMAGIC (self);
-		ev_io_start(EV_DEFAULT, (ev_io *) mg->mg_ptr); 	
+		MAGIC *mg ;
+		for (mg = SvMAGIC (self); mg; mg = mg->mg_moremagic) {
+			if (mg->mg_type == PERL_MAGIC_ext && mg->mg_virtual == NULL){
+				ev_io_start(EV_DEFAULT, (ev_io *) mg->mg_ptr); 	
+				break;
+			}	
+		}
+		
 
 void
 stop_req( saved_to )	

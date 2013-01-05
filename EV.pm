@@ -65,7 +65,7 @@ require Exporter;
 *import = \&Exporter::import;
 require DynaLoader;
 
-$HTTP::Server::EV::VERSION = '0.5';
+$HTTP::Server::EV::VERSION = '0.6';
 DynaLoader::bootstrap HTTP::Server::EV $HTTP::Server::EV::VERSION;
 
 @HTTP::Server::EV::EXPORT = ();
@@ -121,7 +121,7 @@ sub new {
 	
 	$params->{tmp_path} = './upload_tmpfiles/' unless($params->{tmp_path});
 	unless(-d($params->{tmp_path})){
-		mkdir($params->{tmp_path}) or die 'Can`t create path for tmp files!';
+		mkdir($params->{tmp_path}) or die 'Can`t create dir for tmp files!';
 	}
 	$params->{tmp_path} =~ s|([^/])^|$1/|;
 	
@@ -137,15 +137,13 @@ sub new {
 		HTTP::Server::EV::IO::Blocking->_use_me;
 	}
 	
-	eval { HTTP::Server::EV::Coro->_use_me };
 	
 	$instance = bless $params, $self;
 	
 }
 
 
-=head2 listen( port , sub {req_received_callback} , { optional parameters and multipart processing callbacks })
-
+=head2 listen( port num or IO::Socket::INET object , sub {req_received_callback} , { optional parameters and multipart processing callbacks })
 
 Binds callback to port. Calls callback and passes L<HTTP::Server::EV::CGI> object in it. Returns L<HTTP::Server::EV::PortListener> obeject, you can keep it and use to stop port listening.
 
@@ -178,6 +176,10 @@ Binds callback to port. Calls callback and passes L<HTTP::Server::EV::CGI> objec
 		timeout => 1*60 , # server drops request if there is no activity on socket after "timeout" sec. 1min default. Set 0 to disable
 		#This is for not fully received requests, received requests aren't affected and you can keep request object with socket as long as you need it.
 		
+		fork_hook => sub {
+			# do preforking here if you want. Forking more than 1 process per core may be inefficient if you app fully asynchronous. HTTP::Server::EV is fully asynchronous itself if uses IO::AIO
+		},
+		
 		#multipart processing callbacks
 		# you needn't specify all callbacks
 		
@@ -207,7 +209,7 @@ Binds callback to port. Calls callback and passes L<HTTP::Server::EV::CGI> objec
 			my ($cgi) = @_;
 			# called when server drops multipart post connection. 
 			# also called when you manually reject connection by calling $cgi_obj->drop;
-		}
+		},
 		
 	});
 	
@@ -218,58 +220,19 @@ Binds callback to port. Calls callback and passes L<HTTP::Server::EV::CGI> objec
 
 	
 sub listen {
-	my ($self, $port, $cb, $params) = @_;
+	my ($self, $socket, $cb, $params) = @_;
 	
-	die "You can`t bind two listeners on one port!\n" if $listeners{$port};
+	die "You can`t bind two listeners on one port!\n" if $listeners{$socket};
 	
-	my $socket;
-	socket($socket, AF_INET, SOCK_STREAM, getprotobyname('tcp')) || die "socket: $!";
-	setsockopt( $socket, SOL_SOCKET, SO_REUSEADDR, pack('l', 1)) || die "setsockopt: $!";
-	bind( $socket, sockaddr_in($port, INADDR_ANY )) || die "bind: $!";
-	listen( $socket, SOMAXCONN) || die "listen: $!";
-	binmode $socket;
+	if(int $socket){
+		$params->{port} = $socket;
+	}else {
+		$params->{socket} = $socket;
+	}
+	$params->{cb} = $cb;
 	
-	
-	sub _main_cb { 
-		my $cgi = $_[0];
-		
-		eval { $cb->($cgi); };
-		if($@){ warn "ERROR IN CALLBACK: $@"; }
-		
-		return;
-		
-		NEXT_REQ:
-		$cgi->close;
-	};
-	
-	$listeners{$port} = HTTP::Server::EV::PortListener -> new({
-		ptr => 
-			listen_socket( # socket, cb, on_multipart_cb, on_error, timeout
-				$socket,
-				
-				$params->{threading} ? sub { Coro::async(\&_main_cb, @_) } : \&_main_cb ,  
-				sub { 
-					$_[0]->{parent_listener} = $listeners{$port};
-					weaken $_[0]->{parent_listener};
-					
-					$listeners{$port}->{on_multipart}->(@_) if $listeners{$port}->{on_multipart};
-				},
-				sub { 
-					$listeners{$port}->{on_error}->(@_) if $listeners{$port}->{on_error};
-				},
-				
-				( $params->{timeout} // 60 ) # 60 if undef
-			),
-			
-		socket => $socket,
-		
-		%{ $params },
-		# on_multipart
-		# on_file_open
-		# on_file_write
-		# on_file_received
-		# on_error
-	});
+
+	$listeners{$socket} = HTTP::Server::EV::PortListener->new($params);
 }
 
 
@@ -284,19 +247,18 @@ Delete all files in tmp_path. Automatically called on DESTROY if cleanup_on_dest
 
 
 sub cleanup {
-	my @files = glob (shift->{tmp_path}.'*');
+	my @files = glob ($_[0]->{tmp_path}.'*');
 	unlink $_ for (@files);
 }
 
 sub DESTROY {
-	my $self = shift;
-	$self->cleanup if($self->{cleanup_on_destroy});
+	$_[0]->cleanup if($_[0]->{cleanup_on_destroy});
 }
 
 sub dl_load_flags {0}; # Prevent DynaLoader from complaining and croaking
 
 
-=head1 BUGS/WARNINGS
+=head1 WARNINGS
 
 Static allocated buffers:
 
