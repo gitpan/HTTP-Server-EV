@@ -72,8 +72,6 @@ struct req_state {
 	int content_length;
 	int total_readed;
 	
-	int post_match_pos;
-	int get_match_pos;
 	
 	int headers_end_match_pos;
 	int headers_sep_match_pos;
@@ -299,9 +297,6 @@ struct req_state * alloc_state (){
 	state->headers_end_match_pos = 0;
 	state->headers_sep_match_pos = 0;
 	
-	state->post_match_pos = 0;
-	state->get_match_pos = 0;
-	
 	
 	//state->get = newHV();
 	//state->get_a = newHV();
@@ -348,11 +343,9 @@ static void free_state(struct req_state *state){
 
 static void push_to_hash(HV* hash, char *key, int  klen, SV* data){
 		SV** arrayref;
-		if(hv_exists(hash, key, klen )){
-			if(arrayref = hv_fetch(hash, key, klen, 0)){
-				av_push((AV*) SvRV( *arrayref ) , data);
-				SvREFCNT_inc(data);
-			}
+		if(arrayref = hv_fetch(hash, key, klen, 0)){
+			av_push((AV*) SvRV( *arrayref ) , data);
+			SvREFCNT_inc(data);
 		} else {
 			hv_store(hash, key, klen, newRV_noinc((SV*) av_make(1, &data )  )  , 0);
 		}
@@ -467,8 +460,9 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 	struct req_state *state = (struct req_state *)w;
 	
 	struct sockaddr *buf;
-	int bufsize = sizeof(buf);
+	int bufsize = sizeof(struct sockaddr);
 	
+	// yes, this is goto shit
 	if(state->reading == REQ_DROPED_BY_PERL)
 		goto drop_conn;
 	
@@ -497,12 +491,8 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 		if(state->reading <= HEADERS_NOTHING) {
 			if( search( state->buffer[state->buffer_pos], "\r\n", &state->headers_end_match_pos ) ){
 				
-				// only GET and POST supported
-				if((state->buf[0] != 'G' && // if not get
-					state->buf[0] != 'P' ) //and not post
-					|| !state->buf2_pos // or no url
-				){ goto drop_conn;} // gtfo
-				
+	
+				if(!state->buf2_pos){ goto drop_conn;} //no url
 				
 				// save to headers hash
 				hv_store(state->headers, "REQUEST_METHOD" , 14 , newSVpv(state->buf, state->buf_pos) , 0);
@@ -524,14 +514,13 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 				}
 			}
 			else if(state->reading == REQ_METHOD) { // reading request method
-				if( search(state->buffer[state->buffer_pos], "POST ", &state->post_match_pos ) ){
-					strcpy(state->buf, "POST");
+				if(state->buffer[state->buffer_pos] == ' '){ //end of reading request method
+					
 					state->reading = URL_STRING;
-				}
-			
-				if( search(state->buffer[state->buffer_pos], "GET ", &state->get_match_pos ) ){
-					strcpy(state->buf, "GET");
-					state->reading = URL_STRING;
+				}else{
+					state->buf[ state->buf_pos ] = state->buffer[state->buffer_pos];
+					state->buf_pos++;
+					if(state->buf_pos >= BUFFERS_SIZE){ goto drop_conn; }
 				}
 			}
 			
@@ -609,7 +598,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 				hv_store(state->headers, state->buf , state->buf_pos , val , 0);
 				
 				
-				char uc_string[sizeof(state->buf)+6];
+				char uc_string[BUFFERS_SIZE+6];
 				
 				uc_string[0]='H';
 				uc_string[1]='T';
@@ -932,8 +921,14 @@ void
 stop_listen (self)	
 	SV* self
 	CODE:
-		MAGIC *mg = SvMAGIC (self);
-		ev_io_stop(EV_DEFAULT, (ev_io *) mg->mg_ptr); 
+		MAGIC *mg ;
+		for (mg = SvMAGIC (self); mg; mg = mg->mg_moremagic) {
+			if (mg->mg_type == PERL_MAGIC_ext && mg->mg_virtual == NULL){
+				ev_io_stop(EV_DEFAULT, (ev_io *) mg->mg_ptr); 
+				break;
+			}	
+		}
+		
 
 void
 start_listen ( self )	
@@ -987,4 +982,50 @@ drop_req( saved_to )
 		accepted[saved_to]->reading = REQ_DROPED_BY_PERL;
 		ev_io_start(EV_DEFAULT, &(accepted[saved_to]->io)); 
 	
+	
+	
+#define URLDECODE_READ_CHAR 2
+#define URLDECODE_READ_FIRST_PART 3
+#define URLDECODE_READ_SECOND_PART 4
+
+void
+url_decode( encoded )	
+	SV* encoded
+	PPCODE:
+		SV* output = newSV( 100 );
+		
+		STRLEN len;
+			
+		char *input = SvPV(encoded, len);
+		
+		char state = URLDECODE_READ_CHAR;
+		
+		char byte = (char)NULL;
+		int pos = 0;
+		for(; pos < len ; pos++){
+			if( input[pos] == '%' ){
+				state = URLDECODE_READ_FIRST_PART;
+				byte = (char)NULL;
+			}else
+			if(state == URLDECODE_READ_CHAR){
+				sv_catpvn(output, input+pos, 1);
+			}else{
+				if(state == URLDECODE_READ_FIRST_PART){
+					byte = (isdigit(input[pos]) ? input[pos] - '0' : tolower(input[pos]) - 'a' + 10) << 4;
+					state = URLDECODE_READ_SECOND_PART;
+				}else{ // state == URLDECODE_READ_SECOND_PART
+					byte |= (isdigit(input[pos]) ? input[pos] - '0' : tolower(input[pos]) - 'a' + 10);
+					sv_catpvn(output, &byte, 1);
+					byte = (char)NULL;
+					state = URLDECODE_READ_CHAR;
+				}
+			}
+		};
+		
+		STRLEN out_len;
+		char *out_ptr = SvPV(output, out_len);
+		
+		XPUSHs(sv_2mortal(output));
+		XPUSHs(sv_2mortal(newSViv( is_utf8_string( out_ptr , out_len) )));
+
 		

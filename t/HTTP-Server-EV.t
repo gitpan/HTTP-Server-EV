@@ -3,13 +3,13 @@ no warnings;
 use Socket;
 use blib;
 use utf8;
-use Data::Dumper;
 
 
 
 
 
-use Test::More tests => 29;
+
+use Test::More tests => 30;
 use AnyEvent::HTTP;
 use HTTP::Request::Common;
 
@@ -41,6 +41,7 @@ $server->listen( 11111 , sub {
 		print "Test page\n";
 		# warn Dumper $cgi;
 		
+		$cgi->{buffer}->flush_wait();
 		$last_req = $cgi;
 		$last_req->close;	
 	}, { 
@@ -147,6 +148,19 @@ sub {
 		};
 },
 
+sub {
+	http_request 
+		DELETE => 'http://127.0.0.1:11111/', 
+		headers => {
+			'Connection' => 'close'
+		},
+			sub {
+				is( $_[0], "Test page\n", 'DELETE (and any custom methods) reqest' );
+				
+				call_next_test;
+			};
+},
+
 
 sub {
 	print "\n------- POST\n";
@@ -191,13 +205,14 @@ sub {
 		];
 	no bytes;
 	use utf8;
-		
 		http_post 'http://127.0.0.1:11111/',
 			$req->content,
 			headers => {
 				'Content-Type' => $req->header('Content-Type')
 			},
 		sub {
+			# use Data::Dumper;
+			# warn Dumper(\@on_error_args);
 			is( ref( @on_error_args[0]), 'HTTP::Server::EV::CGI' ,'POST on_error callback' );
 			@on_error_args[0] = undef; # for ne
 			call_next_test;
@@ -285,6 +300,9 @@ sub {
 	
 	call_next_test unless $not_skipped;
 },
+
+
+
 
 sub {
 	print "\n----- HTTP::Server::EV::IO::Blocking IO backend\n";

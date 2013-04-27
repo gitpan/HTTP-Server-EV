@@ -3,7 +3,7 @@ use strict;
 use IO::Socket::INET;
 use Carp;
 use Scalar::Util qw/weaken/;
-our $VERSION = '0.6';
+our $VERSION = '0.65';
 
 =head1 NAME
 
@@ -82,8 +82,10 @@ sub _create_main_cb {
 			weaken $cgi->{parent_listener};
 		}
 		
-		$cgi->{buffer}{error_w}->start;
-		
+		$cgi->{buffer}{error_w}->start if(
+			($cgi->{headers}{REQUEST_METHOD} eq 'GET') or
+			($cgi->{headers}{REQUEST_METHOD} eq 'POST')
+		);
 		
 		eval { $cb->($cgi); };
 		if($@){ warn "ERROR IN CALLBACK: $@"; }

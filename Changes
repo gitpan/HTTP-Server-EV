@@ -1,5 +1,11 @@
 Revision history for Perl extension HTTP::Server::EV.
 
+0.65
+	- ~300% Faster urldecode
+	- Any HTTP methods now supported. Server just parses headers, use $cgi->fh to process body of PUT or other methods
+	- Added ->flush_wait and ->give_up_handle methods in HTTP::Server::EV::Buffer
+	- Fixed stack corruption, thanx Edgar Fuß 
+
 0.6
 	- Implemented HTTP::Server::EV::Buffer onerror(ondisconnect) callback
 	- Listen now can accept IO::Socket::INET object with socket to listen

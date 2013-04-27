@@ -11,7 +11,7 @@ no warnings;
 use HTTP::Server::EV::Buffer;
 use HTTP::Server::EV::BufTie;
 
-our $VERSION = '0.6';
+our $VERSION = '0.65';
 
 =head1 NAME
 
@@ -103,42 +103,47 @@ sub new { # init all structures
 	
 	
 
+		## Reading get vars # copy-paste is for microoptimization
+		my @pairs = split(/[;&]/,$self->{headers}{QUERY_STRING},1024);
+		foreach (@pairs) {
+			my ($name, $data) = split /=/, $self->urldecode($_);
+			Encode::_utf8_on($name);
+			Encode::_utf8_on($data);
+			
+			$self->{get}{$name} = $data;
+			
+			$self->{get_a}{$name}=[] unless $self->{get_a}{$name};
+			push @{$self->{get_a}{$name}},$data;
+		}
 
-	## Reading get vars
-	my @pairs = split(/[;&]/,$self->{headers}{QUERY_STRING},1024);
-	foreach (@pairs) {
-		my ($name, $data) = split /=/;
-		$name = $self->urldecode($name);
-		$data = $self->urldecode($data);
-		
-		$self->{get}{$name} = $data;
-		
-		$self->{get_a}{$name}=[] unless $self->{get_a}{$name};
-		push @{$self->{get_a}{$name}},$data;
-	}
-	
-	## Reading cookies
-	@pairs = split(/; /,$self->{headers}{HTTP_COOKIE},100);
-	foreach (@pairs) {
-		my ($name, $data) = split /=/;
-		$self->{cookies}{ $self->urldecode($name) } = $self->urldecode($data);
-	}
+		if($self->{REQUEST_BODY}){
+			my @pairs = split(/[;&]/,$self->{REQUEST_BODY},1024);
+			foreach (@pairs) {
+				my ($name, $data) = split /=/, $self->urldecode($_);
+				Encode::_utf8_on($name);
+				Encode::_utf8_on($data);
+			
+				$self->{post}{$name} = $data;
+						
+				$self->{post_a}{$name}=[] unless $self->{post_a}{$name};
+				push @{$self->{post_a}{$name}},$data;
+			}
+		}	
+
+
+		## Reading cookies
+		@pairs = split(/; /,$self->{headers}{HTTP_COOKIE},100);
+		foreach (@pairs) {
+			my ($name, $data) = split /=/, $self->urldecode($_);
+			Encode::_utf8_on($name);
+			Encode::_utf8_on($data);
+			
+			$self->{cookies}{ $name } = $data;
+		}
 	
 
 	## Parse urlencoded post
-	if($self->{REQUEST_BODY}){
-		my @pairs = split(/[;&]/,$self->{REQUEST_BODY},1024);
-		foreach (@pairs) {
-			my ($name, $data) = split /=/;
-			$name = $self->urldecode($name);
-			$data = $self->urldecode($data);
-			
-			$self->{post}{$name} = $data;
-					
-			$self->{post_a}{$name}=[] unless $self->{post_a}{$name};
-			push @{$self->{post_a}{$name}},$data;
-		}
-	}	
+	
 	
 	return $self;
 }
@@ -238,15 +243,15 @@ Buffered non-blocking print to socket. Same as $cgi->{buffer}->print or $cgi->bu
 sub print {shift->{buffer}->print(@_)};
 
 
-=head2 $cgi->flush
+=head2 $cgi->flush and $cgi->flush_wait
 
-Flushes all buffered data to socket. Same as $cgi->{buffer}->flush
+Same as $cgi->{buffer}->flush and $cgi->{buffer}->flush_wait
 
 =cut
 
 
-sub flush {$_[0]->{buffer}->flush};
-
+sub flush {$_[0]->{buffer}->flush($_[1])};
+sub flush_wait {$_[0]->{buffer}->flush_wait($_[1])};
 
 
 =head2 $cgi->close
@@ -360,14 +365,12 @@ Returns urldecoded utf8 string
 =cut
 
 sub urldecode {
-	my $tmp = $_[1];
-	$tmp=~s/\+/ /gs;
-	$tmp=~s/%(?:([Dd][0-9a-fA-F])%([0-9a-fA-F]{2})|([0-9a-fA-F]{2}))/
-		$1 ? chr(hex $1).chr(hex $2) : decode("cp1251",chr(hex $3))
-	/eg;
-	Encode::_utf8_on($tmp);
-	return $tmp;
+	my ($output, $is_utf) = HTTP::Server::EV::url_decode($_[1]);
+	$output = decode( $is_utf ? 'utf8' : 'cp1251', $output); 
+	Encode::_utf8_on($output);
+	$output;
 };
+
 	
 
 
