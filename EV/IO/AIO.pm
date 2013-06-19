@@ -20,7 +20,7 @@ sub _use_me { # i'm not using ISA for performance
 }
 
 
-our $VERSION = '0.65';
+our $VERSION = '0.66';
 
 =head1 NAME
 

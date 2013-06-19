@@ -456,22 +456,20 @@ static void timer_cb(struct ev_loop *loop, ev_timer *w, int revents) {
 }
 
 
+
 static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 	struct req_state *state = (struct req_state *)w;
 	
 	struct sockaddr *buf;
 	int bufsize = sizeof(struct sockaddr);
 	
-	// yes, this is goto shit
 	if(state->reading == REQ_DROPED_BY_PERL)
-		goto drop_conn;
+		return drop_conn(state, loop);
 	
 	if(!state->buffer_pos){ //called to read new data
 		if( ( state->readed = PerlSock_recvfrom(w->fd, state->buffer, SOCKREAD_BUFSIZ,  0, buf, &bufsize) ) <= 0 ){
 			// connection closed or error
-			drop_conn:
-				drop_conn(state, loop);
-				return;
+			return drop_conn(state, loop);
 		}
 	} //else - woken up from suspending. Process existent data
 	//reset timeout
@@ -482,7 +480,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 	for(; state->buffer_pos < state->readed ; state->buffer_pos++ ){
 		
 		if(state->reading == REQ_DROPED_BY_PERL)
-			goto drop_conn;
+			return drop_conn(state, loop);
 			
 		if(state->reading & (1 << 7))// 7 bit set - suspended
 			return;
@@ -492,7 +490,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 			if( search( state->buffer[state->buffer_pos], "\r\n", &state->headers_end_match_pos ) ){
 				
 	
-				if(!state->buf2_pos){ goto drop_conn;} //no url
+				if(!state->buf2_pos){ return drop_conn(state, loop);} //no url
 				
 				// save to headers hash
 				hv_store(state->headers, "REQUEST_METHOD" , 14 , newSVpv(state->buf, state->buf_pos) , 0);
@@ -510,7 +508,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 				else{
 					state->buf2[ state->buf2_pos ] = state->buffer[state->buffer_pos];
 					state->buf2_pos++;
-					if(state->buf2_pos >= BUFFERS_SIZE){ goto drop_conn; }
+					if(state->buf2_pos >= BUFFERS_SIZE){ return drop_conn(state, loop); }
 				}
 			}
 			else if(state->reading == REQ_METHOD) { // reading request method
@@ -520,7 +518,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 				}else{
 					state->buf[ state->buf_pos ] = state->buffer[state->buffer_pos];
 					state->buf_pos++;
-					if(state->buf_pos >= BUFFERS_SIZE){ goto drop_conn; }
+					if(state->buf_pos >= BUFFERS_SIZE){ return drop_conn(state, loop); }
 				}
 			}
 			
@@ -534,18 +532,18 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					SV** hashval; 
 					char *str;
 					
-					if(! (hashval = hv_fetch(state->headers, "REQUEST_METHOD" , 14 , 0) ) ){ goto drop_conn;} // goto will never happen...
+					if(! (hashval = hv_fetch(state->headers, "REQUEST_METHOD" , 14 , 0) ) ){ return drop_conn(state, loop);} // drop will never happen...
 					str = SvPV_nolen(*hashval);
 					
 					// method POST
 					if( strEQ("POST", str) ){
 						
-						if(! (hashval = hv_fetch(state->headers, "HTTP_CONTENT-LENGTH" , 19 , 0) ) ){ goto drop_conn;}
+						if(! (hashval = hv_fetch(state->headers, "HTTP_CONTENT-LENGTH" , 19 , 0) ) ){ return drop_conn(state, loop);}
 						str = SvPV_nolen(*hashval);
 						
 						state->content_length = atoi(str);
 						
-						if(! (hashval = hv_fetch(state->headers, "HTTP_CONTENT-TYPE" , 17 , 0) ) ){ goto drop_conn;} // goto will never happen...
+						if(! (hashval = hv_fetch(state->headers, "HTTP_CONTENT-TYPE" , 17 , 0) ) ){ return drop_conn(state, loop);} // drop will never happen...
 						STRLEN len;
 						str = SvPV(*hashval, len);
 						
@@ -562,14 +560,14 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 								}else
 								if(str[i] == '='){ reading_boundary = 1; }
 							}
-							if( (pos < 2) || !reading_boundary ){ goto drop_conn;}
+							if( (pos < 2) || !reading_boundary ){ return drop_conn(state, loop);}
 							
 							state->reading = BODY_M_NOTHING;
 							call_pre_callback(state);
 						}
 						// urlencoded data
 						else{ 
-							if(state->content_length > MAX_URLENCODED_BODY){ goto drop_conn;};
+							if(state->content_length > MAX_URLENCODED_BODY){ return drop_conn(state, loop);};
 							
 							state->reading = BODY_URLENCODED;
 							hv_store(state->rethash, "REQUEST_BODY" , 12 , newSV(1024) , 0);
@@ -614,7 +612,8 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 				hv_store(state->headers, uc_string , state->buf_pos+5 , val , 0);
 				
 				
-				end_headers_reading: 
+				end_headers_reading: // goto shit
+				
 				state->buf_pos = 0;
 				state->buf2_pos = 0;
 				
@@ -629,18 +628,18 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 			if(state->reading == HEADER_NAME){ // read header name to buf
 				state->buf[ state->buf_pos ] = state->buffer[state->buffer_pos];
 				state->buf_pos++;
-				if(state->buf_pos >= BUFFERS_SIZE){ goto drop_conn; }
+				if(state->buf_pos >= BUFFERS_SIZE){ return drop_conn(state, loop); }
 			}
 			else{  // read header value to buf2
 				state->buf2[ state->buf2_pos ] = state->buffer[state->buffer_pos];
 				state->buf2_pos++;
-				if(state->buf2_pos >= BUFFERS_SIZE){ goto drop_conn; }
+				if(state->buf2_pos >= BUFFERS_SIZE){ return drop_conn(state, loop); }
 			}
 		}
 		// read urlencoded body
 		else if(state->reading == BODY_URLENCODED ){
 			SV** hashval; 
-			if(! (hashval = hv_fetch(state->rethash, "REQUEST_BODY" , 12 , 0) ) ){goto drop_conn;} // goto will never happen...
+			if(! (hashval = hv_fetch(state->rethash, "REQUEST_BODY" , 12 , 0) ) ){return drop_conn(state, loop);} // drop will never happen...
 			int bytes_to_read = state->readed - state->buffer_pos;
 			
 			if( (state->total_readed + bytes_to_read) > state->content_length ){
@@ -709,13 +708,13 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 								state->body_chunk[state->body_chunk_pos] = state->boundary[bound_i];
 								state->body_chunk_pos++;
 										
-								if(state->body_chunk_pos >= BODY_CHUNK_BUFSIZ){ goto drop_conn; }
+								if(state->body_chunk_pos >= BODY_CHUNK_BUFSIZ){ return drop_conn(state, loop); }
 							}		
 						}
 								
 						state->body_chunk[state->body_chunk_pos] = state->buffer[state->buffer_pos];
 						state->body_chunk_pos++;		
-						if(state->body_chunk_pos >= BODY_CHUNK_BUFSIZ){ goto drop_conn; }
+						if(state->body_chunk_pos >= BODY_CHUNK_BUFSIZ){ return drop_conn(state, loop); }
 								
 					}
 					// reading form file
@@ -754,7 +753,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					}else{
 						state->buf[ state->buf_pos ] = state->buffer[state->buffer_pos];
 						state->buf_pos++;
-						if(state->buf_pos >= BUFFERS_SIZE){ goto drop_conn; }
+						if(state->buf_pos >= BUFFERS_SIZE){ return drop_conn(state, loop); }
 					}
 				}
 				
@@ -772,7 +771,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					}else{
 						state->buf2[ state->buf2_pos ] = state->buffer[state->buffer_pos];
 						state->buf2_pos++;
-						if(state->buf2_pos >= BUFFERS_SIZE){ goto drop_conn; }
+						if(state->buf2_pos >= BUFFERS_SIZE){ return drop_conn(state, loop); }
 					}
 				};
 				
@@ -784,7 +783,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 						state->reading == BODY_M_HEADERS_NAME ||
 						state->reading == BODY_M_HEADERS_FILENAME //||
 					//	!state->buf_pos // Did some browsers may send form fields with empty name?
-					){ goto drop_conn; } //malformed multipart headers
+					){ return drop_conn(state, loop); } //malformed multipart headers
 						
 					//printf("\nEnd of fileheader matched\n");	
 					
@@ -801,7 +800,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					}
 					
 					
-					if(state->multipart_data_count > MAX_DATA){ goto drop_conn; }
+					if(state->multipart_data_count > MAX_DATA){ return drop_conn(state, loop); }
 					state->multipart_data_count++;
 						
 					continue;
@@ -816,7 +815,7 @@ static void handler_cb (struct ev_loop *loop, ev_io *w, int revents){
 					ev_io_stop(loop, w); 
 					return;
 				}
-				goto drop_conn;
+				return drop_conn(state, loop);
 			};
 		}
 	}
@@ -840,6 +839,7 @@ static void listen_cb (struct ev_loop *loop, ev_io *w, int revents){
 			warn("HTTP::Server::EV ERROR: Can`t accept connection. Run out of open file descriptors! Listening stopped until one of the server connection will be closed!");
 			
 			ev_io_stop(EV_DEFAULT, &(listener->io)); 
+			return;
 		};
 		
 		struct req_state *state = alloc_state();

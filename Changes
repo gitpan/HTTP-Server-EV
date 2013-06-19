@@ -1,5 +1,8 @@
 Revision history for Perl extension HTTP::Server::EV.
 
+0.66
+	- Bugfix, thanx Edgar Fuß 
+
 0.65
 	- ~300% Faster urldecode
 	- Any HTTP methods now supported. Server just parses headers, use $cgi->fh to process body of PUT or other methods

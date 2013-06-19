@@ -3,7 +3,7 @@ use strict;
 use IO::Socket::INET;
 use Carp;
 use Scalar::Util qw/weaken/;
-our $VERSION = '0.65';
+our $VERSION = '0.66';
 
 =head1 NAME
 

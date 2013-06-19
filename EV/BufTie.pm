@@ -1,5 +1,5 @@
 package HTTP::Server::EV::BufTie;
-our $VERSION = '0.65';
+our $VERSION = '0.66';
 use Carp;
 use strict;
 use bytes;
