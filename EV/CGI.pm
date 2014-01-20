@@ -11,7 +11,7 @@ no warnings;
 use HTTP::Server::EV::Buffer;
 use HTTP::Server::EV::BufTie;
 
-our $VERSION = '0.67';
+our $VERSION = '0.68';
 
 =head1 NAME
 
@@ -80,6 +80,7 @@ $cgi->attach(*STDOUT) - attaches STDOUT to socket makes it non blocking
 
 our $cookies_lifetime = 3600*24*31;
 
+our $MAX_URLENCODED_FIELDS = 1024; 
 
 #$cgi->new({ fd => sock fileno , post => {}, get => {} , headers => {} .... });
 
@@ -104,7 +105,7 @@ sub new { # init all structures
 	
 
 		## Reading get vars # copy-paste is for microoptimization
-		my @pairs = split(/[;&]/,$self->{headers}{QUERY_STRING},1024);
+		my @pairs = split(/[;&]/,$self->{headers}{QUERY_STRING},$MAX_URLENCODED_FIELDS);
 		foreach (@pairs) {
 			my ($name, $data) = split /=/, $self->urldecode($_);
 			Encode::_utf8_on($name);
@@ -117,7 +118,7 @@ sub new { # init all structures
 		}
 
 		if($self->{REQUEST_BODY}){
-			my @pairs = split(/[;&]/,$self->{REQUEST_BODY},1024);
+			my @pairs = split(/[;&]/,$self->{REQUEST_BODY},$MAX_URLENCODED_FIELDS);
 			foreach (@pairs) {
 				my ($name, $data) = split /=/, $self->urldecode($_);
 				Encode::_utf8_on($name);

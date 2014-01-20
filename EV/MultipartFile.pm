@@ -1,6 +1,6 @@
 package HTTP::Server::EV::MultipartFile;
 use strict;
-our $VERSION = '0.66';
+our $VERSION = '0.68';
 
 =head1 NAME
 

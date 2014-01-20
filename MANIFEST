@@ -12,3 +12,7 @@ EV/IO/AIO.pm
 EV/IO/Blocking.pm
 EV.pm
 EV.xs
+c/hse.h
+c/memory.c
+c/perlcb.c
+c/tmp_files.c

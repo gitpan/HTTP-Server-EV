@@ -14,6 +14,7 @@ my $req =  {
 
 $| = 1;
 
+
 unless (eval { require IO::AIO }){
 	my $answ = prompt("- Install IO::AIO for asynchronous disk IO?",'y');
 
@@ -25,10 +26,68 @@ unless (eval { require IO::AIO }){
 	$req->{'AnyEvent::AIO'} = 0;
 }
 
+my $DEFINE = '';
+if (prompt ("Config buffer sizes (y/n)?", "n") =~ /[yY]/) {
+   
+
+print <<EOF;
+
+
+	MAX_DATA
+	Maximal number of multipart form fields. 
+	
+EOF
+
+$DEFINE .= " -DMAX_DATA=" . int(prompt ("Number form fields?", "1024"));
+
+print <<EOF;
+
+
+	MAX_URLENCODED_BODY
+	Maximal size of urlencoded form body in bytes. 
+	
+	Number of fields parsed from urlencoded forms can be changed in runtime by setting $HTTP::Server::EV::CGI::MAX_URLENCODED_FIELDS (default 1024). 
+	Don't set large value if you don't want to become vulnerable to DoS by sending lot ( >10k ) of small form fields like all apps using CGI.pm
+	
+EOF
+
+$DEFINE .= " -DMAX_URLENCODED_BODY=" . int(prompt ("Urlencoded body size?", "102400"));
+  
+ 
+print <<EOF;
+
+
+	BODY_CHUNK_BUFSIZ
+	Multipart form field value size limited by one chunk size.
+	Max memory usage by object with post data = MAX_DATA * BODY_CHUNK_BUFSIZ
+	
+	This limit is not applied to files - when received file data size reaches BODY_CHUNK_BUFSIZ it flushed to disc. 
+	
+EOF
+
+$DEFINE .= " -DBODY_CHUNK_BUFSIZ=" . int(prompt ("Multipart form field value size?", "51200"));
+ 
+
+print <<EOF;
+
+
+	SOCKREAD_BUFSIZ
+	Socket read buffer size
+	
+EOF
+
+$DEFINE .= " -DSOCKREAD_BUFSIZ=" . int(prompt ("Socket read buffer size?", "8096"));
+ 
+}
+
+
+
+
+
 my %options = (
   'TYPEMAPS' => [],
   'NAME' => 'HTTP::Server::EV',
-  'VERSION' => '0.67',
+  'VERSION' => '0.68',
   'OPTIMIZE' => ' -O2',
   'PREREQ_PM' => $req,
   'BUILD_REQUIRES' => { # for tests
@@ -39,7 +98,12 @@ my %options = (
   'CONFIGURE_REQUIRES' => {
 	'EV' => 0
   },
-
+  
+  'TEST_REQUIRES' => {
+	'Coro' => 0
+  },
+  
+  'DEFINE'    => "$DEFINE",
   
   'CONFIGURE' => sub {
 	return {EV::MakeMaker::ev_args(my %tmp)};

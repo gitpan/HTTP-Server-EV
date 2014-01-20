@@ -1,5 +1,9 @@
 Revision history for Perl extension HTTP::Server::EV.
 
+0.68
+	- Make-time configuration of buffer sizes
+	- Added Coro to test prerequisites. 
+
 0.66
 	- Bugfix, thanx Edgar Fuß 
 
